@@ -421,7 +421,7 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     if (img && trim) {
       // New hoop art: backboard on right, rim opening on left (facing shooter).
       // Rim ring in the trimmed image is at approximately (0.33, 0.50).
-      const targetH = 180;
+      const targetH = 210;
       const aspect = trim.sw / trim.sh;
       const targetW = targetH * aspect;
       const rimFracX = 0.33;
