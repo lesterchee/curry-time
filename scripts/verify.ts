@@ -104,9 +104,8 @@ async function selectThreePointer(page: Page) {
 }
 
 async function goBackToShotSelect(page: Page) {
-  // Click "SHOT: FT" or "SHOT: 3" button at top-left — it toggles back to shot select.
-  // The text starts with "SHOT:".
-  const locator = page.getByText(/^SHOT:/).first();
+  // Click the top-left shot indicator button — it toggles back to shot select.
+  const locator = page.getByText(/(FT · 1PT|3PT · 3PT)/).first();
   await locator.waitFor({ state: "visible", timeout: 5000 });
   await locator.click({ force: true });
   await page.waitForTimeout(400);

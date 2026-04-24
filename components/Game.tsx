@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Character } from "../data/characters";
 import {
-  classifyOutcome,
+  classifyRimCrossing,
   getShotConfig,
   powerToVelocity,
   type Outcome,
@@ -105,6 +105,7 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     outcome: null as Outcome | null,
     pendingOutcome: null as Outcome | null,
     resolvedPending: false,
+    rimCrossed: false,
     outcomeT: 0,
     particles: [] as Particle[],
     netWiggleT: 0,
@@ -175,6 +176,9 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     };
     s.phase = "idle";
     s.outcome = null;
+    s.pendingOutcome = null;
+    s.resolvedPending = false;
+    s.rimCrossed = false;
     s.particles = [];
     s.characterFrame = 0;
     setPhase("idle");
@@ -263,57 +267,30 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
     if (s.phase === "flying") {
       const b = s.ball;
+      const prevY = b.y;
       b.vy += cfg.gravity * dt;
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.rotation += b.rotationSpeed * dt;
 
-      const outcome = s.pendingOutcome;
-
-      // For a swish shot, guide the ball through the rim center and kill the
-      // horizontal velocity so it falls straight down through the net rather
-      // than drifting into the backboard.
-      if (outcome === "swish" && b.vy > 0 && !s.resolvedPending) {
-        if (b.y >= cfg.rimY - 6 && b.y <= cfg.rimY + 24) {
-          const dx = cfg.rimX - b.x;
-          b.x += dx * 0.55;
-          b.vx *= 0.15;
-        }
-        if (b.y > cfg.rimY + 14) {
-          s.resolvedPending = true;
-          s.netWiggleT = 0.65;
-          playNetSwish();
-        }
-      }
-
-      // Rim-in: hit front rim once, bounce, then drop through
-      if (outcome === "rim-in" && !s.resolvedPending && b.vy > 0) {
-        if (b.y >= cfg.rimY - 4 && b.x >= cfg.rimX - cfg.rimOuter - 10) {
-          b.vx = -Math.abs(b.vx) * 0.2 + 30;
-          b.vy = -Math.abs(b.vy) * 0.45;
-          b.x = cfg.rimX - cfg.rimOuter;
-          playRimClang();
-          s.rimShakeT = 0.3;
-          s.pendingOutcome = "swish";
-          // don't mark resolvedPending yet — swish branch will play net
-        }
-      }
-
-      // Rim-out: hit rim, bounce back, no score
-      if (outcome === "rim-out" && !s.resolvedPending && b.vy > 0) {
-        if (b.y >= cfg.rimY - 4 && b.x >= cfg.rimX - cfg.rimOuter - 10) {
-          b.vx = -Math.abs(b.vx) * 0.6 - 60;
-          b.vy = -Math.abs(b.vy) * 0.5;
-          b.x = cfg.rimX - cfg.rimOuter - 4;
-          playRimClang();
-          s.rimShakeT = 0.3;
-          s.resolvedPending = true;
-        }
+      // Detect the single descending crossing of the rim plane. This is the
+      // only place we classify hit/miss — outcome is entirely a function of
+      // trajectory, not of the release power bucket.
+      if (
+        !s.rimCrossed &&
+        b.vy > 0 &&
+        prevY < cfg.rimY &&
+        b.y >= cfg.rimY
+      ) {
+        s.rimCrossed = true;
+        const hit = classifyRimCrossing(b.x, cfg);
+        applyRimHit(s, hit);
       }
 
       // ball out of bounds = finalize outcome
       if (b.y > LOGICAL_H + 40 || b.x < -40 || b.x > LOGICAL_W + 80) {
         if (!s.outcome) {
+          // If we never crossed the rim plane (too short / too high), it's an air ball.
           const final: Outcome = s.pendingOutcome ?? "air-ball";
           resolveOutcome(final);
         }
@@ -609,10 +586,12 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
   function launch(power: number) {
     const s = stateRef.current;
     const cfg = s.cfg;
-    const outcome = classifyOutcome(power);
-    s.pendingOutcome = outcome as Outcome;
-    s.outcome = null;
     const v = powerToVelocity(power, cfg);
+
+    s.pendingOutcome = null;
+    s.outcome = null;
+    s.resolvedPending = false;
+    s.rimCrossed = false;
 
     s.ball = {
       x: cfg.releaseX,
@@ -625,6 +604,52 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     s.phase = "flying";
     setPhase("flying");
     playRelease();
+  }
+
+  function applyRimHit(
+    s: typeof stateRef.current,
+    hit: ReturnType<typeof classifyRimCrossing>,
+  ) {
+    const cfg = s.cfg;
+    const b = s.ball;
+    if (hit.kind === "swish") {
+      s.pendingOutcome = "swish";
+      // mild center snap + damp vx so ball drops cleanly through the net
+      const dx = cfg.rimX - b.x;
+      b.x += dx * 0.5;
+      b.vx *= 0.25;
+      s.netWiggleT = 0.65;
+      playNetSwish();
+      return;
+    }
+    if (hit.kind === "rim-in") {
+      s.pendingOutcome = "rim-in";
+      // ball rattles on rim then drops through
+      b.x = cfg.rimX;
+      b.vx = 0;
+      b.vy = Math.max(Math.abs(b.vy) * 0.3, 80);
+      s.netWiggleT = 0.5;
+      s.rimShakeT = 0.25;
+      playRimClang();
+      return;
+    }
+    if (hit.kind === "rim-out") {
+      s.pendingOutcome = "rim-out";
+      s.rimShakeT = 0.3;
+      playRimClang();
+      if (hit.side === "back" || hit.side === "backboard") {
+        // bounce back toward the shooter
+        b.vx = -Math.abs(b.vx) * 0.55 - 80;
+        b.vy = -Math.abs(b.vy) * 0.4;
+      } else {
+        // front rim — ball deflects forward with reduced speed
+        b.vx = Math.abs(b.vx) * 0.35 + 20;
+        b.vy = -Math.abs(b.vy) * 0.45;
+      }
+      return;
+    }
+    // short — never touched rim ring; leave as air-ball, let physics run out
+    s.pendingOutcome = "air-ball";
   }
 
   const perfectLow = 65;

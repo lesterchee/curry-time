@@ -47,9 +47,12 @@ export function getShotConfig(kind: ShotKind): ShotConfig {
   const releaseY = 340;
   const rimY = 250;
   const rimX = 880;
-  // new hoop: rim ring is a wider ellipse — bump collision radii
-  const rimInner = 28;
-  const rimOuter = 40;
+  // Scoring tolerance. Widened to make the 65-75% power band a reliable
+  // swish while keeping >78% / <62% firmly outside so the game can't be
+  // cheated by just holding the button. Decoupled from the visual rim
+  // size in the hoop sprite — the artwork is unchanged.
+  const rimInner = 80;
+  const rimOuter = 110;
 
   if (kind === "free-throw") {
     const releaseX = 440;
@@ -100,24 +103,48 @@ export function powerToVelocity(power: number, cfg: ShotConfig): number {
 export type Outcome = "swish" | "rim-in" | "rim-out" | "air-ball";
 
 /**
- * Predict the outcome given the power. Landing-based classification tied to
- * where the ball crosses the rim plane.
+ * Trajectory-based hit classifier. Called when the ball crosses the rim
+ * plane (y = rimY) on a descending frame. Outcome depends on where the
+ * ball is horizontally at that crossing relative to the rim ring:
  *
- * Perfect zone 65–78 → guaranteed swish.
- * 55–65 / 78–85 → rim roll (60% in, 40% out).
- * 40–55 / 85–95 → rim bounce out.
- * else → air ball.
+ *   crossX ∈ [rimX - rimInner + margin, rimX + rimInner - margin] → swish
+ *   crossX ∈ [rimX - rimOuter, rimX + rimOuter] (outside inner)    → rim roll
+ *     └─ RIM_IN_CHANCE of those rolls drop in, rest bounce out
+ *   crossX > rimX + rimOuter → hits backboard area → rim-out (brick)
+ *   crossX < rimX - rimOuter → short → air-ball
+ *
+ * If the ball never reaches rimY (its trajectory peaks below the rim),
+ * no call is made here — the outer update loop resolves it as air-ball.
  */
-export function classifyOutcome(
-  power: number,
+export const BALL_RADIUS = 23;
+export const RIM_IN_CHANCE = 0.3;
+export const SWISH_EDGE_MARGIN = 0;
+
+export type RimHit =
+  | { kind: "swish" }
+  | { kind: "rim-in" }
+  | { kind: "rim-out"; side: "front" | "back" | "backboard" }
+  | { kind: "air-ball"; side: "short" };
+
+export function classifyRimCrossing(
+  crossX: number,
+  cfg: ShotConfig,
   rng: () => number = Math.random,
-): Outcome {
-  if (power >= 63 && power <= 78) return "swish";
-  if ((power >= 56 && power < 63) || (power > 78 && power <= 85)) {
-    return rng() < 0.6 ? "rim-in" : "rim-out";
+): RimHit {
+  const innerLeft = cfg.rimX - cfg.rimInner + SWISH_EDGE_MARGIN;
+  const innerRight = cfg.rimX + cfg.rimInner - SWISH_EDGE_MARGIN;
+  const outerLeft = cfg.rimX - cfg.rimOuter;
+  const outerRight = cfg.rimX + cfg.rimOuter;
+
+  if (crossX >= innerLeft && crossX <= innerRight) {
+    return { kind: "swish" };
   }
-  if ((power >= 40 && power < 56) || (power > 85 && power <= 95)) {
-    return "rim-out";
+  if (crossX >= outerLeft && crossX <= outerRight) {
+    if (rng() < RIM_IN_CHANCE) return { kind: "rim-in" };
+    return { kind: "rim-out", side: crossX > cfg.rimX ? "back" : "front" };
   }
-  return "air-ball";
+  if (crossX > outerRight) {
+    return { kind: "rim-out", side: "backboard" };
+  }
+  return { kind: "air-ball", side: "short" };
 }
