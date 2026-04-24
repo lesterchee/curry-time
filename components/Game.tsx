@@ -270,16 +270,18 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
       const outcome = s.pendingOutcome;
 
-      // For a swish shot, guide the ball through the rim center cosmetically
-      // if it strayed: as it crosses rim height, nudge x toward rim center.
+      // For a swish shot, guide the ball through the rim center and kill the
+      // horizontal velocity so it falls straight down through the net rather
+      // than drifting into the backboard.
       if (outcome === "swish" && b.vy > 0 && !s.resolvedPending) {
-        if (b.y >= cfg.rimY - 4 && b.y <= cfg.rimY + 20) {
+        if (b.y >= cfg.rimY - 6 && b.y <= cfg.rimY + 24) {
           const dx = cfg.rimX - b.x;
-          b.x += dx * 0.35; // snap toward rim center
+          b.x += dx * 0.55;
+          b.vx *= 0.15;
         }
-        if (b.y > cfg.rimY + 10) {
+        if (b.y > cfg.rimY + 14) {
           s.resolvedPending = true;
-          s.netWiggleT = 0.6;
+          s.netWiggleT = 0.65;
           playNetSwish();
         }
       }
@@ -388,12 +390,13 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
     }
 
-    // hoop
-    drawHoop(ctx, s);
-    // character
+    // character first (behind ball)
     drawCharacter(ctx, s);
     // ball
     drawBall(ctx, s);
+    // hoop drawn AFTER ball so the rim + net occlude the ball as it passes
+    // through → ball visibly drops behind the rim ring and net ropes
+    drawHoop(ctx, s);
     // particles
     for (const p of s.particles) {
       ctx.fillStyle = p.color;
@@ -416,14 +419,12 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     const trim = s.trims.hoop;
     const shake = s.rimShakeT > 0 ? (Math.random() - 0.5) * 8 : 0;
     if (img && trim) {
-      // target height on screen — rim should be at cfg.rimY, and visible hoop
-      // graphic spans this height.
-      const targetH = 160;
+      // New hoop art: backboard on right, rim opening on left (facing shooter).
+      // Rim ring in the trimmed image is at approximately (0.33, 0.50).
+      const targetH = 180;
       const aspect = trim.sw / trim.sh;
       const targetW = targetH * aspect;
-      // within the generated hoop art the rim ring sits roughly at the
-      // vertical center of the trimmed bbox. Anchor there.
-      const rimFracX = 0.62; // rim is right of the backboard
+      const rimFracX = 0.33;
       const rimFracY = 0.5;
       const drawX = cfg.rimX - targetW * rimFracX;
       const drawY = cfg.rimY - targetH * rimFracY;
@@ -475,17 +476,26 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     const cfg = s.cfg;
     if (!img || !trim) return;
 
-    const targetH = 220; // ~36% of 600 logical height
+    const targetH = 220;
     const aspect = trim.sw / trim.sh;
     const targetW = targetH * aspect;
-    const feetX = cfg.releaseX + 20; // feet slightly right of release point
-    const feetY = FLOOR_Y;
 
-    // floor drop shadow
+    // All three character sprites have their ball-hand at roughly
+    // (0.22, 0.10) of the trimmed bbox. Position the sprite so this
+    // hand anchor lands at (releaseX, releaseY). Then the physics ball
+    // drawn at release position lines up with the hand exactly.
+    const handFracX = 0.22;
+    const handFracY = 0.1;
+    const spriteLeft = cfg.releaseX - handFracX * targetW;
+    const spriteTop = cfg.releaseY - handFracY * targetH;
+    const feetY = spriteTop + targetH;
+    const centerX = spriteLeft + targetW / 2;
+
+    // floor drop shadow — sits just below feet
     ctx.save();
     ctx.fillStyle = "rgba(0,0,0,0.35)";
     ctx.beginPath();
-    ctx.ellipse(feetX, feetY + 6, targetW * 0.36, 10, 0, 0, Math.PI * 2);
+    ctx.ellipse(centerX, feetY + 6, targetW * 0.38, 9, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
@@ -498,7 +508,7 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       scaleY = 1.03;
       skewX = -0.03;
     }
-    ctx.translate(feetX, feetY);
+    ctx.translate(centerX, feetY);
     ctx.transform(1, 0, skewX, scaleY, 0, 0);
     ctx.drawImage(
       img,
@@ -653,19 +663,26 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
             </button>
           </div>
 
-          {/* Top-center score cluster */}
+          {/* Top-center scoreboard plate */}
           <div className="absolute top-3 left-1/2 -translate-x-1/2 flex flex-col items-center z-20">
-            <div
-              className="arcade-text arcade-stroke text-5xl md:text-6xl font-black leading-none"
-              style={{ color: "#ffd84a" }}
-            >
-              {score}
-            </div>
-            <div className="text-sm md:text-base font-black text-white arcade-stroke mt-1">
-              HIGH: {Math.max(highScore, score)}
+            <div className="btn-arcade bg-black/85 border-4 border-black rounded-2xl px-5 py-2 flex items-center gap-4">
+              <div
+                className="arcade-text arcade-stroke text-4xl md:text-5xl font-black leading-none"
+                style={{ color: "#ffd84a" }}
+              >
+                {score}
+              </div>
+              <div className="flex flex-col items-start leading-none gap-0.5">
+                <span className="text-[10px] md:text-xs font-black text-white/70 tracking-widest">
+                  HIGH
+                </span>
+                <span className="text-base md:text-lg font-black text-white arcade-stroke">
+                  {Math.max(highScore, score)}
+                </span>
+              </div>
             </div>
             {streak >= 3 && (
-              <div className="anim-pop arcade-text text-orange-400 text-xl md:text-2xl font-black mt-1">
+              <div className="anim-pop arcade-text text-orange-400 text-xl md:text-2xl font-black mt-2 arcade-stroke">
                 🔥 STREAK: {streak}
               </div>
             )}
@@ -673,28 +690,30 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
           {/* Power meter — absolute right side, always on-screen */}
           <div
-            className="absolute right-5 top-1/2 -translate-y-1/2 w-14 md:w-16 h-[55%] bg-black/70 border-4 border-black rounded-2xl overflow-hidden z-10"
+            className="absolute right-4 top-1/2 -translate-y-1/2 w-[72px] md:w-20 h-[55%] bg-black/80 border-4 border-black rounded-2xl overflow-hidden z-10 flex flex-col"
             key={meterShake}
           >
-            <div
-              className="absolute left-0 right-0 bg-green-400/35 border-y-2 border-green-300"
-              style={{
-                bottom: `${perfectLow}%`,
-                height: `${perfectHigh - perfectLow}%`,
-              }}
-            />
-            <div
-              className="absolute bottom-0 left-0 right-0 transition-none"
-              style={{
-                height: `${powerPct}%`,
-                background:
-                  powerPct >= perfectLow && powerPct <= perfectHigh
-                    ? "linear-gradient(to top, #19e65a, #8cff8c)"
-                    : "linear-gradient(to top, #ff8a00, #ffd84a)",
-              }}
-            />
-            <div className="absolute inset-x-0 top-1 text-center text-white text-xs md:text-sm font-black arcade-stroke">
+            <div className="pt-2 pb-1 text-center text-white text-xs md:text-sm font-black arcade-stroke border-b-2 border-white/20">
               PWR
+            </div>
+            <div className="relative flex-1">
+              <div
+                className="absolute left-0 right-0 bg-green-400/40 border-y-2 border-green-300"
+                style={{
+                  bottom: `${perfectLow}%`,
+                  height: `${perfectHigh - perfectLow}%`,
+                }}
+              />
+              <div
+                className="absolute bottom-0 left-0 right-0 transition-none"
+                style={{
+                  height: `${powerPct}%`,
+                  background:
+                    powerPct >= perfectLow && powerPct <= perfectHigh
+                      ? "linear-gradient(to top, #19e65a, #8cff8c)"
+                      : "linear-gradient(to top, #ff8a00, #ffd84a)",
+                }}
+              />
             </div>
           </div>
 

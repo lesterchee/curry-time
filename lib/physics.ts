@@ -47,8 +47,9 @@ export function getShotConfig(kind: ShotKind): ShotConfig {
   const releaseY = 340;
   const rimY = 250;
   const rimX = 880;
-  const rimInner = 22;
-  const rimOuter = 32;
+  // new hoop: rim ring is a wider ellipse — bump collision radii
+  const rimInner = 28;
+  const rimOuter = 40;
 
   if (kind === "free-throw") {
     const releaseX = 440;
