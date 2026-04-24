@@ -59,11 +59,11 @@ export default function Home() {
           onChangeShot={() => setScreen("shot")}
         />
       )}
-      {/* persistent mute button */}
+      {/* persistent mute button — bottom-left so it never clashes with score HUD */}
       <button
         aria-label={muted ? "Unmute" : "Mute"}
         onClick={toggleMute}
-        className="fixed top-2 right-2 z-50 bg-black/70 text-white rounded-full w-12 h-12 flex items-center justify-center text-2xl border-4 border-black"
+        className="btn-arcade fixed bottom-3 left-3 z-50 bg-black/80 text-white rounded-full w-14 h-14 flex items-center justify-center text-2xl border-4 border-black"
       >
         {muted ? "🔇" : "🔊"}
       </button>

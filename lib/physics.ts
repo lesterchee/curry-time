@@ -41,14 +41,17 @@ function computePerfectVelocity(
 
 export function getShotConfig(kind: ShotKind): ShotConfig {
   // Canvas is logical 1024 x 600
-  const releaseY = 430;
-  const rimY = 240; // rim inner top
-  const rimX = 840;
-  const rimInner = 28;
-  const rimOuter = 42;
+  // Floor surface roughly at y ~ 500 (matches court background).
+  // Character feet at y ~ 515, height ~220, hand/release point at y ~ 340.
+  // Rim sits higher in the scene, at y ~ 250.
+  const releaseY = 340;
+  const rimY = 250;
+  const rimX = 880;
+  const rimInner = 22;
+  const rimOuter = 32;
 
   if (kind === "free-throw") {
-    const releaseX = 420;
+    const releaseX = 440;
     const angleDeg = 52;
     const dx = rimX - releaseX;
     const dy = releaseY - rimY;
@@ -67,8 +70,8 @@ export function getShotConfig(kind: ShotKind): ShotConfig {
       label: "FREE THROW",
     };
   }
-  // three pointer
-  const releaseX = 180;
+  // three pointer: character stands further from hoop
+  const releaseX = 200;
   const angleDeg = 48;
   const dx = rimX - releaseX;
   const dy = releaseY - rimY;

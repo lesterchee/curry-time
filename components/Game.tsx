@@ -21,6 +21,7 @@ import { getHighScore, updateHighScore } from "../lib/scoring";
 
 const LOGICAL_W = 1024;
 const LOGICAL_H = 600;
+const FLOOR_Y = 515;
 
 type Phase = "charging" | "flying" | "resolved" | "idle";
 
@@ -32,6 +33,47 @@ type Particle = {
   life: number;
   color: string;
 };
+
+type Trim = { sx: number; sy: number; sw: number; sh: number };
+
+function trimAlpha(img: HTMLImageElement): Trim {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const cx = c.getContext("2d");
+  if (!cx) return { sx: 0, sy: 0, sw: w, sh: h };
+  cx.drawImage(img, 0, 0);
+  let data: Uint8ClampedArray;
+  try {
+    data = cx.getImageData(0, 0, w, h).data;
+  } catch {
+    return { sx: 0, sy: 0, sw: w, sh: h };
+  }
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const a = data[(y * w + x) * 4 + 3];
+      if (a > 12) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return { sx: 0, sy: 0, sw: w, sh: h };
+  // add a small safety border
+  minX = Math.max(0, minX - 1);
+  minY = Math.max(0, minY - 1);
+  maxX = Math.min(w - 1, maxX + 1);
+  maxY = Math.min(h - 1, maxY + 1);
+  return { sx: minX, sy: minY, sw: maxX - minX + 1, sh: maxY - minY + 1 };
+}
 
 type Props = {
   character: Character;
@@ -76,6 +118,11 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       hoop: null as HTMLImageElement | null,
       char: null as HTMLImageElement | null,
     },
+    trims: {
+      ball: null as Trim | null,
+      hoop: null as Trim | null,
+      char: null as Trim | null,
+    },
     lastTickSoundT: 0,
   });
 
@@ -96,6 +143,11 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       load(character.sprite),
     ]).then(([court, ball, hoop, char]) => {
       s.imgs = { court, ball, hoop, char };
+      s.trims = {
+        ball: trimAlpha(ball),
+        hoop: trimAlpha(hoop),
+        char: trimAlpha(char),
+      };
     });
   }, [character.sprite]);
 
@@ -360,18 +412,34 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
   function drawHoop(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
     const cfg = s.cfg;
-    // hoop image centered on rim
     const img = s.imgs.hoop;
+    const trim = s.trims.hoop;
     const shake = s.rimShakeT > 0 ? (Math.random() - 0.5) * 8 : 0;
-    if (img) {
-      const hoopW = 220;
-      const hoopH = 220;
-      // rim (hole) is approximately at 60% down, 55% across in the png
-      const drawX = cfg.rimX - hoopW * 0.50;
-      const drawY = cfg.rimY - hoopH * 0.26;
+    if (img && trim) {
+      // target height on screen — rim should be at cfg.rimY, and visible hoop
+      // graphic spans this height.
+      const targetH = 160;
+      const aspect = trim.sw / trim.sh;
+      const targetW = targetH * aspect;
+      // within the generated hoop art the rim ring sits roughly at the
+      // vertical center of the trimmed bbox. Anchor there.
+      const rimFracX = 0.62; // rim is right of the backboard
+      const rimFracY = 0.5;
+      const drawX = cfg.rimX - targetW * rimFracX;
+      const drawY = cfg.rimY - targetH * rimFracY;
       ctx.save();
       ctx.translate(shake, shake * 0.4);
-      ctx.drawImage(img, drawX, drawY, hoopW, hoopH);
+      ctx.drawImage(
+        img,
+        trim.sx,
+        trim.sy,
+        trim.sw,
+        trim.sh,
+        drawX,
+        drawY,
+        targetW,
+        targetH,
+      );
       ctx.restore();
     } else {
       ctx.fillStyle = "#b02020";
@@ -381,15 +449,20 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     // net wiggle overlay (a few animated lines beneath rim)
     if (s.netWiggleT > 0) {
       ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.9)";
-      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 2;
       const t = performance.now() / 80;
-      for (let i = -3; i <= 3; i++) {
-        const x = cfg.rimX + i * 9;
-        const wiggle = Math.sin(t + i) * 5 * s.netWiggleT;
+      for (let i = -2; i <= 2; i++) {
+        const x = cfg.rimX + i * 6;
+        const wiggle = Math.sin(t + i) * 4 * s.netWiggleT;
         ctx.beginPath();
         ctx.moveTo(x, cfg.rimY + 8);
-        ctx.quadraticCurveTo(x + wiggle, cfg.rimY + 30, x + wiggle * 0.3, cfg.rimY + 58);
+        ctx.quadraticCurveTo(
+          x + wiggle,
+          cfg.rimY + 22,
+          x + wiggle * 0.3,
+          cfg.rimY + 40,
+        );
         ctx.stroke();
       }
       ctx.restore();
@@ -398,42 +471,69 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
   function drawCharacter(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
     const img = s.imgs.char;
+    const trim = s.trims.char;
     const cfg = s.cfg;
-    if (!img) return;
-    // draw character with feet at releaseY + 80 (floor)
-    const targetH = 280;
-    const aspect = img.naturalWidth / img.naturalHeight;
+    if (!img || !trim) return;
+
+    const targetH = 220; // ~36% of 600 logical height
+    const aspect = trim.sw / trim.sh;
     const targetW = targetH * aspect;
-    const cx = cfg.releaseX - targetW * 0.15;
-    const floorY = cfg.releaseY + 120;
+    const feetX = cfg.releaseX + 20; // feet slightly right of release point
+    const feetY = FLOOR_Y;
+
+    // floor drop shadow
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(feetX, feetY + 6, targetW * 0.36, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
     ctx.save();
-    // subtle crouch/release frame transforms
     let scaleY = 1;
     let skewX = 0;
     if (s.characterFrame === 1) {
-      // crouch
-      scaleY = 0.92;
+      scaleY = 0.94;
     } else if (s.characterFrame === 2) {
-      // release (arm extended already in sprite)
-      scaleY = 1.04;
-      skewX = -0.04;
+      scaleY = 1.03;
+      skewX = -0.03;
     }
-    ctx.translate(cx, floorY);
+    ctx.translate(feetX, feetY);
     ctx.transform(1, 0, skewX, scaleY, 0, 0);
-    ctx.drawImage(img, -targetW / 2, -targetH, targetW, targetH);
+    ctx.drawImage(
+      img,
+      trim.sx,
+      trim.sy,
+      trim.sw,
+      trim.sh,
+      -targetW / 2,
+      -targetH,
+      targetW,
+      targetH,
+    );
     ctx.restore();
   }
 
   function drawBall(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
     const b = s.ball;
     const img = s.imgs.ball;
-    const size = 52;
+    const trim = s.trims.ball;
+    const size = 46;
     ctx.save();
     ctx.translate(b.x, b.y);
     ctx.rotate(b.rotation);
-    if (img) {
-      ctx.drawImage(img, -size / 2, -size / 2, size, size);
+    if (img && trim) {
+      ctx.drawImage(
+        img,
+        trim.sx,
+        trim.sy,
+        trim.sw,
+        trim.sh,
+        -size / 2,
+        -size / 2,
+        size,
+        size,
+      );
     } else {
       ctx.fillStyle = "#e07b1b";
       ctx.beginPath();
@@ -525,7 +625,7 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       <div className="relative w-full h-full flex items-center justify-center">
         <canvas
           ref={canvasRef}
-          className="max-w-full max-h-full"
+          className="max-w-full max-h-full block"
           onPointerDown={onPointerDown}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
@@ -536,101 +636,100 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
           style={{ touchAction: "none" }}
         />
         {/* HUD overlay */}
-        <div className="pointer-events-none absolute inset-0 flex flex-col">
-          <div className="flex justify-between items-start p-3 gap-3">
-            <div className="pointer-events-auto flex gap-2">
-              <button
-                onClick={onExit}
-                className="btn-arcade bg-yellow-400 text-black rounded-xl px-4 py-2 text-sm font-black"
-              >
-                ← MENU
-              </button>
-              <button
-                onClick={onChangeShot}
-                className="btn-arcade bg-blue-500 text-white rounded-xl px-4 py-2 text-sm font-black"
-              >
-                SHOT: {shotKind === "free-throw" ? "FT" : "3PT"}
-              </button>
-            </div>
-            <div className="flex flex-col items-end gap-1">
-              <div
-                className="arcade-text arcade-stroke text-white text-4xl md:text-5xl font-black leading-none"
-                style={{ color: "#ffd84a" }}
-              >
-                {score}
-              </div>
-              <div className="text-xs font-black text-white/90 arcade-stroke">
-                HIGH: {Math.max(highScore, score)}
-              </div>
-              {streak >= 3 && (
-                <div className="anim-pop arcade-text text-orange-400 text-2xl font-black">
-                  🔥 STREAK: {streak}
-                </div>
-              )}
-            </div>
+        <div className="pointer-events-none absolute inset-0">
+          {/* Top-left control cluster */}
+          <div className="absolute top-3 left-3 flex gap-2 pointer-events-auto z-20">
+            <button
+              onClick={onExit}
+              className="btn-arcade bg-yellow-400 text-black rounded-2xl px-4 py-3 text-base md:text-lg font-black"
+            >
+              ← MENU
+            </button>
+            <button
+              onClick={onChangeShot}
+              className="btn-arcade bg-blue-500 text-white rounded-2xl px-4 py-3 text-base md:text-lg font-black"
+            >
+              {shotKind === "free-throw" ? "FT · 1PT" : "3PT · 3PT"}
+            </button>
           </div>
 
-          <div className="flex-1 flex items-center justify-end pr-4">
-            {/* power meter */}
+          {/* Top-center score cluster */}
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex flex-col items-center z-20">
             <div
-              className="pointer-events-none relative w-12 md:w-16 h-[55%] bg-black/60 border-4 border-black rounded-xl overflow-hidden"
-              key={meterShake}
+              className="arcade-text arcade-stroke text-5xl md:text-6xl font-black leading-none"
+              style={{ color: "#ffd84a" }}
             >
-              {/* perfect zone highlight */}
-              <div
-                className="absolute left-0 right-0 bg-green-400/30 border-y-2 border-green-300"
-                style={{
-                  bottom: `${perfectLow}%`,
-                  height: `${perfectHigh - perfectLow}%`,
-                }}
-              />
-              {/* fill */}
-              <div
-                className="absolute bottom-0 left-0 right-0 transition-none"
-                style={{
-                  height: `${powerPct}%`,
-                  background: powerPct >= perfectLow && powerPct <= perfectHigh
+              {score}
+            </div>
+            <div className="text-sm md:text-base font-black text-white arcade-stroke mt-1">
+              HIGH: {Math.max(highScore, score)}
+            </div>
+            {streak >= 3 && (
+              <div className="anim-pop arcade-text text-orange-400 text-xl md:text-2xl font-black mt-1">
+                🔥 STREAK: {streak}
+              </div>
+            )}
+          </div>
+
+          {/* Power meter — absolute right side, always on-screen */}
+          <div
+            className="absolute right-5 top-1/2 -translate-y-1/2 w-14 md:w-16 h-[55%] bg-black/70 border-4 border-black rounded-2xl overflow-hidden z-10"
+            key={meterShake}
+          >
+            <div
+              className="absolute left-0 right-0 bg-green-400/35 border-y-2 border-green-300"
+              style={{
+                bottom: `${perfectLow}%`,
+                height: `${perfectHigh - perfectLow}%`,
+              }}
+            />
+            <div
+              className="absolute bottom-0 left-0 right-0 transition-none"
+              style={{
+                height: `${powerPct}%`,
+                background:
+                  powerPct >= perfectLow && powerPct <= perfectHigh
                     ? "linear-gradient(to top, #19e65a, #8cff8c)"
                     : "linear-gradient(to top, #ff8a00, #ffd84a)",
-                }}
-              />
-              <div className="absolute inset-x-0 top-1 text-center text-white text-[10px] md:text-xs font-black">
-                PWR
-              </div>
+              }}
+            />
+            <div className="absolute inset-x-0 top-1 text-center text-white text-xs md:text-sm font-black arcade-stroke">
+              PWR
             </div>
           </div>
 
-          {/* instructions / banner */}
-          <div className="flex justify-center pb-6">
+          {/* Instructions / status strip */}
+          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-10">
             {phase === "idle" && (
-              <div className="anim-pulse bg-black/70 text-white rounded-2xl px-6 py-3 text-lg md:text-2xl font-black arcade-stroke">
+              <div className="anim-pulse bg-black/80 text-white rounded-2xl px-5 py-3 text-base md:text-xl font-black arcade-stroke border-4 border-black">
                 HOLD to charge · RELEASE to shoot
               </div>
             )}
             {phase === "charging" && (
-              <div className="bg-black/70 text-yellow-300 rounded-2xl px-6 py-3 text-lg md:text-2xl font-black arcade-stroke">
+              <div className="bg-black/80 text-yellow-300 rounded-2xl px-5 py-3 text-base md:text-xl font-black arcade-stroke border-4 border-black">
                 AIM FOR THE GREEN ZONE
               </div>
             )}
           </div>
 
-          {/* Outcome banner */}
-          {banner && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="anim-pop">
-                <OutcomeBanner outcome={banner} shotKind={shotKind} />
-              </div>
-            </div>
-          )}
-
+          {/* SHOOT AGAIN button */}
           {phase === "resolved" && (
-            <div className="absolute bottom-20 left-0 right-0 flex justify-center pointer-events-auto">
+            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-auto z-30">
               <button
                 onClick={() => resetBall()}
                 className="btn-arcade bg-orange-500 text-white rounded-2xl px-8 py-4 text-2xl md:text-3xl font-black arcade-stroke"
               >
                 SHOOT AGAIN
               </button>
+            </div>
+          )}
+
+          {/* Outcome banner — z-40 so it's on top of character/hoop/ball */}
+          {banner && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
+              <div className="anim-pop">
+                <OutcomeBanner outcome={banner} shotKind={shotKind} />
+              </div>
             </div>
           )}
         </div>
