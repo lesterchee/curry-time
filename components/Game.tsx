@@ -759,7 +759,7 @@ function OutcomeBanner({
           : "AIR BALL!";
   return (
     <div
-      className="arcade-text arcade-stroke text-7xl md:text-9xl font-black"
+      className="arcade-text arcade-stroke text-5xl sm:text-6xl md:text-8xl font-black text-center px-4"
       style={{ color, textShadow: "6px 6px 0 #000, -3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000" }}
     >
       {text}

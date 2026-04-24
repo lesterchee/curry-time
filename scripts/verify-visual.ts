@@ -75,8 +75,8 @@ async function runViewport(browser: Browser, vp: ViewportConfig) {
   await clickButtonByText(page, "Kayden Stark");
   await clickButtonByText(page, "FREE THROW");
 
-  // Wait for canvas + assets.
-  await page.waitForTimeout(600);
+  // Wait for canvas + assets (court PNG is ~870KB on slower networks).
+  await page.waitForTimeout(2000);
 
   const screenShotPath = `/tmp/curry-${vp.name}-shot-screen.png`;
   await page.screenshot({ path: screenShotPath, fullPage: true });
