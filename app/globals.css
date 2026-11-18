@@ -582,3 +582,47 @@ button, img { -webkit-user-drag: none; }
   .duel-score span { display: none; }
   .duel-score small { margin-bottom: 0; }
 }
+
+.online-panel {
+  display: grid;
+  gap: 16px;
+  width: min(100%, 540px);
+  margin: clamp(20px, 7vh, 84px) auto;
+  padding: clamp(16px, 4vw, 32px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #121c2e;
+}
+.online-panel h1 { font-size: clamp(42px, 10vw, 74px); line-height: .9; }
+.online-panel > .back-button { justify-self: start; }
+.online-note { color: var(--muted); }
+.online-note strong { color: var(--paper); }
+.versus-choices, .online-roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.versus-choices > button { min-height: 54px; }
+.online-form { display: grid; gap: 12px; }
+.online-form input {
+  min-width: 0;
+  min-height: 49px;
+  padding: 8px 12px;
+  border: 1px solid #526688;
+  border-radius: 8px;
+  background: #0b1221;
+  font-size: 1.1rem;
+}
+.online-seat {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 6px 8px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #172338;
+}
+.online-seat img { width: 39px; height: 48px; object-fit: contain; }
+.online-seat small { display: block; color: var(--muted); font-size: .72rem; }
+.online-modes { display: flex; gap: 8px; }
+.online-panel [aria-pressed="true"] { border-color: var(--lime); color: var(--lime); }
+.online-panel .primary-button:disabled { background: #2b374c; color: var(--paper); box-shadow: none; cursor: default; }
+.online-error { color: #ffd1a8; font-size: .9rem; }

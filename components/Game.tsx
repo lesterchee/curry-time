@@ -18,6 +18,7 @@ import {
   COURT_HEIGHT,
   COURT_WIDTH,
   FLOOR_Y,
+  FLIGHT_STEP,
   GREEN_HIGH,
   GREEN_LOW,
   RIM_HALF_WIDTH,
@@ -40,7 +41,8 @@ import {
   playTickTock,
 } from "../lib/sounds";
 import { getHighScore, updateHighScore } from "../lib/scoring";
-import { newMatch, recordShot, SHOTS_PER_PLAYER } from "../lib/match";
+import { newMatch, recordShot, SHOTS_PER_PLAYER, type Match } from "../lib/match";
+import { SEATS, type OnlineRoom, type OnlineShot, type Seat } from "../lib/online";
 
 const INITIAL_LIFT = 12;
 const FOLLOW_TIME = 0.75;
@@ -59,24 +61,35 @@ type Particle = {
   color: string;
 };
 
+type Replay = { shot: OnlineShot; result: Match };
+type OnlineGame = {
+  seat: Seat;
+  room: OnlineRoom;
+  connected: boolean;
+  pending: boolean;
+  message: string;
+  onShoot: (power: number) => Promise<void>;
+  onRematch: () => void;
+};
+
 type Props = {
   character: Character;
   opponent?: Character;
   shotKind: ShotKind;
   soundControl: ReactNode;
   onExit: () => void;
-  onChangeShot: () => void;
+  onChangeShot?: () => void;
+  online?: OnlineGame;
 };
 
-export default function Game({ character, opponent, shotKind, soundControl, onExit, onChangeShot }: Props) {
+export default function Game({ character, opponent, shotKind, soundControl, onExit, onChangeShot, online }: Props) {
   const gameRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<number | "keyboard" | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number>(0);
 
-  const [match, setMatch] = useState(newMatch);
-  const shooter = match.turn === 1 && opponent ? opponent : character;
+  const [match, setMatch] = useState(() => online?.room.match ?? newMatch());
   const matchOver = Boolean(opponent && match.players[1].shots === SHOTS_PER_PLAYER);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
@@ -93,6 +106,11 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     charging: false,
     chargeStart: 0,
     flight: null as Flight | null,
+    simulationCarry: 0,
+    replay: null as Replay | null,
+    lastReplay: online?.room.lastShot?.number ?? 0,
+    resetAt: 0,
+    sending: false,
     replayHold: false,
     particles: [] as Particle[],
     trail: [] as { x: number; y: number }[],
@@ -100,14 +118,12 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     best: highScore,
     reduceMotion: false,
     portrait: false,
-
     rimShakeT: 0,
     cfg,
     imgs: {
       court: null as HTMLImageElement | null,
       ball: null as HTMLImageElement | null,
       hoop: null as HTMLImageElement | null,
-
     },
     art: {} as Record<string, PlayerArt>,
     lastTickSoundT: 0,
@@ -142,6 +158,9 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     inputRef.current = null;
     s.charging = false;
     s.flight = null;
+    s.simulationCarry = 0;
+    s.replay = null;
+    s.resetAt = 0;
     s.phase = "idle";
     s.replayHold = false;
     s.particles = [];
@@ -162,8 +181,30 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     return s.charging ? shotPowerAt(t - s.chargeStart) : 0;
   }
 
+  function animateShot(power: number) {
+    const s = stateRef.current;
+    s.flight = createFlight(s.cfg, power);
+    s.simulationCarry = 0;
+    s.phase = "flying";
+    setPowerPct(power);
+    setPhase("flying");
+    playRelease();
+  }
+
   function update(dt: number, nowMs: number) {
     const s = stateRef.current;
+    if (online && s.phase !== "flying") {
+      const shot = online.room.lastShot;
+      if (shot && shot.number > s.lastReplay) {
+        resetBall();
+        s.lastReplay = shot.number;
+        s.replay = { shot, result: online.room.match };
+        animateShot(shot.power);
+      } else if (s.resetAt && nowMs >= s.resetAt) {
+        resetBall();
+      }
+    }
+
     if (s.charging) {
       const p = currentPower(nowMs);
       setPowerPct(p);
@@ -175,16 +216,21 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
 
     const flight = s.flight;
     if (s.phase === "flying" && flight) {
-      stepFlight(flight, s.cfg, dt, (event) => {
-        if (event === "rim" || event === "board") {
-          if (s.rimShakeT < 0.14) playRimClang();
-          s.rimShakeT = 0.22;
-        } else if (event === "net") {
-          playNetSwish();
-        } else {
-          playBallBounce();
-        }
-      });
+      s.simulationCarry += dt;
+      while (s.simulationCarry >= FLIGHT_STEP && !flight.outcome) {
+        stepFlight(flight, s.cfg, FLIGHT_STEP, (event) => {
+          if (event === "rim" || event === "board") {
+            if (s.rimShakeT < 0.14) playRimClang();
+            s.rimShakeT = 0.22;
+          } else if (event === "net") {
+            playNetSwish();
+          } else {
+            playBallBounce();
+          }
+        });
+        s.simulationCarry -= FLIGHT_STEP;
+      }
+
 
       if (!s.reduceMotion && !flight.inNet && flight.touches === 0 && flight.floorTime === null) {
         s.trail.push({ x: flight.ball.x, y: flight.ball.y });
@@ -192,7 +238,7 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
       } else if (s.trail.length) {
         s.trail.shift();
       }
-      if (flight.outcome) resolveOutcome(flight.outcome);
+      if (flight.outcome) resolveOutcome(s.replay?.shot.outcome ?? flight.outcome, nowMs);
     }
 
     s.rimShakeT = Math.max(0, s.rimShakeT - dt);
@@ -208,7 +254,7 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     }
   }
 
-  function resolveOutcome(outcome: Outcome) {
+  function resolveOutcome(outcome: Outcome, nowMs: number) {
     const s = stateRef.current;
     s.phase = "resolved";
     setPhase("resolved");
@@ -222,7 +268,10 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
       playBoo();
     }
 
-    if (opponent) {
+    if (s.replay) {
+      setMatch(s.replay.result);
+      if (s.replay.result.players[1].shots < SHOTS_PER_PLAYER) s.resetAt = nowMs + 720;
+    } else if (opponent) {
       setMatch((previous) => recordShot(previous, made ? s.cfg.points : 0));
     } else if (made) {
       s.score += s.cfg.points;
@@ -348,6 +397,8 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
 
   function drawCharacter(ctx: CanvasRenderingContext2D, s: typeof stateRef.current): Pick<Ball, "x" | "y" | "rotation"> {
     const { releaseX, releaseY } = s.cfg;
+    const turn = s.replay?.shot.seat ?? match.turn;
+    const shooter = turn === 1 && opponent ? opponent : character;
     const art = s.art[shooter.id];
     if (!art?.portrait && !art?.set && !art?.follow) return { x: releaseX, y: releaseY, rotation: 0 };
 
@@ -422,6 +473,9 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
 
   function startCharge(now: number) {
     const s = stateRef.current;
+    if (online && (!online.connected || online.pending || s.sending || !online.room.seats.every((player) => player.present)
+      || online.room.phase !== "playing" || online.room.match.turn !== online.seat
+      || (online.room.lastShot?.number ?? 0) !== s.lastReplay)) return false;
     const replay = s.phase === "resolved";
     if (replay && !opponent) resetBall();
     if (s.phase !== "idle") return false;
@@ -441,14 +495,22 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     }
     const power = currentPower(now);
     s.charging = false;
-    s.flight = createFlight(s.cfg, power);
-    s.phase = "flying";
-    setPowerPct(power);
-    setPhase("flying");
-    playRelease();
+    if (online) {
+      s.sending = true;
+      s.phase = "idle";
+      setPhase("idle");
+      setPowerPct(power);
+      void online.onShoot(power).finally(() => { s.sending = false; });
+    } else {
+      animateShot(power);
+    }
   }
 
   function passOrRematch() {
+    if (online) {
+      if (matchOver && !online.pending) online.onRematch();
+      return;
+    }
     if (stateRef.current.phase !== "resolved") return;
     setMatch((previous) => matchOver ? newMatch() : { ...previous, turn: previous.turn === 0 ? 1 : 0 });
     resetBall();
@@ -475,8 +537,8 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
   function onShootKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.target !== gameRef.current && !(event.target as HTMLElement).closest(".shoot-button")) return;
     if (event.code !== "Space" && event.code !== "Enter") return;
-    if (opponent && stateRef.current.phase === "resolved") {
-      if (event.target === gameRef.current && !event.repeat) {
+    if (opponent && (stateRef.current.phase === "resolved" || matchOver)) {
+      if (event.target === gameRef.current && !event.repeat && (!online || matchOver)) {
         event.preventDefault();
         passOrRematch();
       }
@@ -560,7 +622,16 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
 
   const inZone = powerPct >= GREEN_LOW && powerPct <= GREEN_HIGH;
   const modeLabel = shotKind === "free-throw" ? "Free throw" : "Three-pointer";
-  const passing = Boolean(opponent && phase === "resolved");
+  const passing = Boolean(!online && opponent && phase === "resolved");
+  const theirName = online ? SEATS[online.seat === 0 ? 1 : 0].name : "";
+  const theirDevicePresent = online?.room.seats.every((player) => player.present);
+  const onlineWaiting = online && (!online.connected || !theirDevicePresent || online.pending
+    || online.room.match.turn !== online.seat || phase === "resolved" || online.room.phase !== "playing");
+  const onlineHint = online?.message || (!online?.connected ? "Reconnecting to the room…"
+    : !theirDevicePresent ? `Waiting for ${theirName} to reconnect`
+    : online?.pending ? "Sending your shot…"
+    : online?.room.match.turn === online?.seat ? "Your turn · Hold, then let go on green"
+    : `${theirName}’s turn`);
   const [first, second] = match.players;
   const winner = first.score === second.score ? null : first.score > second.score ? character : opponent;
   const winnerLabel = character.id === opponent?.id ? `Player ${first.score > second.score ? 1 : 2}` : winner?.name;
@@ -568,6 +639,7 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     ? inZone ? "Green zone" : "Hold until the meter turns green"
     : phase === "flying" ? "Ball in flight"
     : matchOver ? "Play again with the same players"
+    : online ? onlineHint
     : passing ? `Pass the device to ${match.turn === 0 ? opponent?.name : character.name}`
     : opponent ? `Player ${match.turn + 1} · Shot ${match.players[match.turn].shots + 1} of ${SHOTS_PER_PLAYER}`
     : "Hold, then let go on green";
@@ -585,7 +657,7 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
     >
       <header className="game-topbar">
         <div className="game-nav">
-          <button className="game-nav-button" onClick={onExit}><span aria-hidden="true">←</span> Menu</button>
+          <button className="game-nav-button" onClick={onExit} disabled={online?.pending}><span aria-hidden="true">←</span> Menu</button>
           {opponent ? (
             <span className="game-mode-label">{shotKind === "free-throw" ? "FREE THROWS" : "3-POINTERS"}</span>
           ) : (
@@ -608,7 +680,7 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
               aria-current={!matchOver && index === match.turn ? "true" : undefined}
             >
               <div>
-                <small>Player {index + 1} · {match.players[index].shots}/{SHOTS_PER_PLAYER} shots</small>
+                <small>{online?.seat === index ? "You" : online ? SEATS[index].name : `Player ${index + 1}`} · {match.players[index].shots}/{SHOTS_PER_PLAYER} shots</small>
                 <span className="display">{player.name}</span>
               </div>
               <b className="display" data-duel-score>{match.players[index].score}</b>
@@ -661,20 +733,22 @@ export default function Game({ character, opponent, shotKind, soundControl, onEx
             <div className="power-zone" style={{ left: `${GREEN_LOW}%`, width: `${GREEN_HIGH - GREEN_LOW}%` }} />
             {powerPct > 0 && <div className="power-needle" style={{ left: `${powerPct}%` }} />}
           </div>
-          <p className="control-hint" id="shoot-hint">{hint}</p>
+          <p className="control-hint" id="shoot-hint" role={online?.message ? "alert" : undefined}>{hint}</p>
         </div>
         <button
           className={`primary-button shoot-button${phase === "charging" ? inZone ? " is-release-ready" : " is-charging" : ""}`}
           aria-describedby="shoot-hint"
           aria-keyshortcuts="Space Enter"
-          aria-disabled={phase === "flying" || undefined}
-          {...(!passing ? shotInput : {})}
+          aria-disabled={phase === "flying" || Boolean(!matchOver && onlineWaiting) || online?.pending || undefined}
+          {...(!passing && !matchOver ? shotInput : {})}
           onClick={(event) => {
-            if (passing) passOrRematch();
-            else if (event.detail === 0 && stateRef.current.phase === "resolved") resetBall();
+            if (passing || matchOver) passOrRematch();
+            else if (!online && event.detail === 0 && stateRef.current.phase === "resolved") resetBall();
           }}
         >
-          {matchOver ? "Rematch" : passing ? "Next player" : phase === "resolved" ? "Shoot again" : phase === "charging" ? inZone ? "Let go now!" : "Keep holding" : phase === "flying" ? "Shooting…" : "Hold to shoot"}
+          {matchOver ? "Rematch" : passing ? "Next player" : phase === "charging" ? inZone ? "Let go now!" : "Keep holding"
+            : phase === "flying" ? "Shooting…" : onlineWaiting ? online?.pending ? "Sending…" : "Wait for your turn"
+            : phase === "resolved" ? "Shoot again" : "Hold to shoot"}
         </button>
       </div>
     </main>

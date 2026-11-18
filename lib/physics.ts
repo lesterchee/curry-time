@@ -12,7 +12,7 @@ export const GREEN_HIGH = 82;
 const GRAVITY = 750;
 const RIM_TUBE_RADIUS = 4;
 const NET_DEPTH = 55;
-const MAX_STEP = 1 / 240;
+export const FLIGHT_STEP = 1 / 240;
 
 export type ShotConfig = {
   releaseX: number;
@@ -103,8 +103,8 @@ export function stepFlight(flight: Flight, cfg: ShotConfig, duration: number, on
   const rimLeft = cfg.rimX - RIM_HALF_WIDTH;
   const rimRight = cfg.rimX + RIM_HALF_WIDTH;
 
-  for (let remaining = duration; remaining > 0 && !flight.outcome; remaining -= MAX_STEP) {
-    const dt = Math.min(remaining, MAX_STEP);
+  for (let remaining = duration; remaining > 0 && !flight.outcome; remaining -= FLIGHT_STEP) {
+    const dt = Math.min(remaining, FLIGHT_STEP);
     flight.elapsed += dt;
     const x = b.x;
     const y = b.y;

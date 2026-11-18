@@ -123,6 +123,7 @@ async function verifyPhone(page: Page) {
 async function verifyDuel(page: Page) {
   await openGame(page);
   await page.getByRole("button", { name: "2 players" }).tap();
+  await page.getByRole("button", { name: "Same phone" }).tap();
   await page.getByRole("heading", { name: "PLAYER 1, PICK YOUR BALLER" }).waitFor();
   await page.getByRole("button", { name: /Michelangelo Kayden/ }).tap();
   await page.getByRole("heading", { name: "PLAYER 2, PICK YOUR BALLER" }).waitFor();

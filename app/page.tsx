@@ -13,7 +13,12 @@ const Game = dynamic(() => import("../components/Game"), {
   loading: () => <p className="court-loading" role="status">Loading the court…</p>,
 });
 
-type Screen = "title" | "character" | "shot" | "play";
+const OnlineDuel = dynamic(() => import("../components/OnlineDuel"), {
+  ssr: false,
+  loading: () => <p className="court-loading" role="status">Opening the online court…</p>,
+});
+
+type Screen = "title" | "versus" | "online" | "character" | "shot" | "play";
 type Mode = "solo" | "duel";
 
 export default function Home() {
@@ -75,6 +80,8 @@ export default function Home() {
     </button>
   );
 
+  if (screen === "online") return <OnlineDuel soundControl={sound} onBack={() => changeScreen("versus")} />;
+
   if (screen === "play") {
     return (
       <Game
@@ -99,7 +106,21 @@ export default function Home() {
         {sound}
       </header>
       {screen === "title" && (
-        <Title onPlay={() => start("solo")} onDuel={() => start("duel")} onPick={(player) => start("solo", player)} />
+        <Title onPlay={() => start("solo")} onDuel={() => changeScreen("versus")} onPick={(player) => start("solo", player)} />
+      )}
+      {screen === "versus" && (
+        <main className="online-panel screen-in">
+          <button className="back-button" onClick={() => changeScreen("title")}>← Back</button>
+          <h1 className="display">Two players</h1>
+          <div className="versus-choices">
+            <button className="primary-button" onClick={() => {
+              primeAudio();
+              if (!isMuted()) startMusic();
+              changeScreen("online");
+            }}>Two phones</button>
+            <button className="game-nav-button" onClick={() => start("duel")}>Same phone</button>
+          </div>
+        </main>
       )}
       {screen === "character" && (
         <CharacterSelect
