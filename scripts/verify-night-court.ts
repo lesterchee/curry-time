@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright";
 import { characters } from "../data/characters";
+import { SHOTS_PER_PLAYER } from "../lib/match";
 
 const baseUrl = process.env.CURRY_URL ?? "http://127.0.0.1:3139";
 const screenshotDir = process.env.CURRY_SCREENSHOTS;
@@ -92,13 +93,13 @@ async function verifyPhone(page: Page) {
   assert.ok(area);
   const touchPoints = [{ x: area.x + area.width / 2, y: area.y + area.height / 2 }];
   await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
-  await page.getByRole("button", { name: "Release to shoot" }).waitFor();
+  await page.getByRole("button", { name: "Keep holding" }).waitFor();
   await session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
   await page.getByRole("button", { name: "Hold to shoot" }).waitFor();
   await expectText(page, "[data-score]", "0");
 
   await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
-  await page.waitForTimeout(480);
+  await page.getByRole("button", { name: "Let go now!" }).waitFor();
   await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await page.getByRole("status").filter({ hasText: "SPLASH!" }).waitFor();
   await expectText(page, "[data-score]", "3");
@@ -117,6 +118,62 @@ async function verifyPhone(page: Page) {
   assert.ok(landscapeCanvas && landscapeCanvas.height > 150);
   assert.ok(landscapeControls && landscapeControls.y + landscapeControls.height <= 390);
   await capture(page, "court-landscape");
+}
+
+async function verifyDuel(page: Page) {
+  await openGame(page);
+  await page.getByRole("button", { name: "2 players" }).tap();
+  await page.getByRole("heading", { name: "PLAYER 1, PICK YOUR BALLER" }).waitFor();
+  await page.getByRole("button", { name: /Michelangelo Kayden/ }).tap();
+  await page.getByRole("heading", { name: "PLAYER 2, PICK YOUR BALLER" }).waitFor();
+  await page.getByRole("button", { name: "Back", exact: true }).tap();
+  await page.getByRole("heading", { name: "PLAYER 1, PICK YOUR BALLER" }).waitFor();
+  await page.getByRole("button", { name: /Michelangelo Kayden/ }).tap();
+  await page.getByRole("button", { name: /Leonardo Owen/ }).tap();
+  await page.getByRole("button", { name: /Three-pointer/ }).tap();
+
+  const artRequests = characters.flatMap(({ shot }) => ["set", "follow"].map(async (pose) => {
+    const response = await page.request.get(new URL(`/arcade/shots/${shot.art}-${pose}.webp`, baseUrl).href);
+    assert.equal(response.status(), 200, `${shot.art} ${pose} art must load`);
+    assert.equal(response.headers()["content-type"], "image/webp");
+  }));
+  await Promise.all(artRequests);
+
+  const device = await page.context().newCDPSession(page);
+  for (let round = 0; round < 2 * SHOTS_PER_PLAYER; round++) {
+    const active = round % 2 + 1;
+    const turn = page.locator(`[data-player="${active}"][data-turn="true"]`);
+    await turn.waitFor();
+    const area = await page.getByRole("button", { name: "Hold to shoot" }).boundingBox();
+    assert.ok(area);
+    const touchPoints = [{ x: area.x + area.width / 2, y: area.y + area.height / 2 }];
+    await device.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+    if (round === 0) {
+      await page.waitForTimeout(590);
+      await device.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.waitForTimeout(125);
+      await capture(page, "duel-follow-through");
+      await page.getByRole("status").filter({ hasText: "SPLASH!" }).waitFor();
+      await expectText(page, '[data-player="1"] [data-duel-score]', "3");
+    } else {
+      await device.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    }
+
+    if (round < 2 * SHOTS_PER_PLAYER - 1) {
+      await page.getByRole("button", { name: "Next player" }).tap();
+    }
+  }
+
+  const result = page.getByRole("status").filter({ hasText: "Michelangelo Kayden wins!" });
+  await result.waitFor();
+  assert.match(await result.innerText(), /Final score · 3–0/i);
+  assert.equal(await page.getByText("5/5 shots", { exact: false }).count(), 2);
+  assert.deepEqual(await page.evaluate(() => localStorage.getItem("curry-time:high-scores")), null);
+  await capture(page, "duel-final");
+  await page.getByRole("button", { name: "Rematch", exact: true }).tap();
+  await page.locator('[data-player="1"][data-turn="true"]').waitFor();
+  assert.deepEqual(await page.locator("[data-duel-score]").allTextContents(), ["0", "0"]);
+  await page.getByRole("button", { name: "Hold to shoot" }).waitFor();
 }
 
 async function main() {
@@ -139,8 +196,12 @@ async function main() {
     });
     phone.on("pageerror", (error) => errors.push(error.message));
     await verifyPhone(phone);
+
+    const duel = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    duel.on("pageerror", (error) => errors.push(error.message));
+    await verifyDuel(duel);
     assert.deepEqual(errors, []);
-    console.log("Night Court passed desktop and phone checks for lineup, navigation, shots, scores and saved records.");
+    console.log("Night Court passed solo and two-player checks for both shot types, mobile inputs, records, and a full match and rematch.");
   } finally {
     await browser.close();
   }

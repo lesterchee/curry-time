@@ -14,10 +14,14 @@ const Game = dynamic(() => import("../components/Game"), {
 });
 
 type Screen = "title" | "character" | "shot" | "play";
+type Mode = "solo" | "duel";
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("title");
   const [characterId, setCharacterId] = useState(characters[0].id);
+  const [opponentId, setOpponentId] = useState(characters[1].id);
+  const [mode, setMode] = useState<Mode>("solo");
+  const [selecting, setSelecting] = useState<1 | 2>(1);
   const [shotKind, setShotKind] = useState<ShotKind>("free-throw");
   const [muted, setMutedState] = useState(false);
 
@@ -31,16 +35,32 @@ export default function Home() {
     window.scrollTo(0, 0);
   }
 
-  function start(character?: Character) {
+  function start(nextMode: Mode, character?: Character) {
     primeAudio();
     if (!isMuted()) startMusic();
-    if (character) {
-      setCharacterId(character.id);
+    setMode(nextMode);
+    setSelecting(1);
+    if (character) setCharacterId(character.id);
+    changeScreen(character ? "shot" : "character");
+  }
+
+  function pick(character: Character) {
+    if (mode === "duel" && selecting === 2) {
+      setOpponentId(character.id);
       changeScreen("shot");
+      return;
+    }
+    setCharacterId(character.id);
+    if (mode === "duel") {
+      setSelecting(2);
+      window.scrollTo(0, 0);
     } else {
-      changeScreen("character");
+      changeScreen("shot");
     }
   }
+
+  const character = getCharacter(characterId);
+  const opponent = mode === "duel" ? getCharacter(opponentId) : undefined;
 
   const sound = (
     <button
@@ -59,7 +79,8 @@ export default function Home() {
     return (
       <Game
         key={`${characterId}:${shotKind}`}
-        character={getCharacter(characterId)}
+        character={character}
+        opponent={opponent}
         shotKind={shotKind}
         soundControl={sound}
         onExit={() => changeScreen("title")}
@@ -77,11 +98,24 @@ export default function Home() {
         </button>
         {sound}
       </header>
-      {screen === "title" && <Title onPlay={() => start()} onPick={start} />}
-      {screen === "character" && <CharacterSelect onPick={start} onBack={() => changeScreen("title")} />}
+      {screen === "title" && (
+        <Title onPlay={() => start("solo")} onDuel={() => start("duel")} onPick={(player) => start("solo", player)} />
+      )}
+      {screen === "character" && (
+        <CharacterSelect
+          playerNumber={mode === "duel" ? selecting : undefined}
+          firstPlayer={selecting === 2 ? character : undefined}
+          onPick={pick}
+          onBack={() => {
+            if (selecting === 2) setSelecting(1);
+            else changeScreen("title");
+          }}
+        />
+      )}
       {screen === "shot" && (
         <ShotSelect
-          character={getCharacter(characterId)}
+          character={character}
+          opponent={opponent}
           onPick={(shot) => {
             setShotKind(shot);
             changeScreen("play");
@@ -93,7 +127,11 @@ export default function Home() {
   );
 }
 
-function Title({ onPlay, onPick }: { onPlay: () => void; onPick: (c: Character) => void }) {
+function Title({ onPlay, onDuel, onPick }: {
+  onPlay: () => void;
+  onDuel: () => void;
+  onPick: (c: Character) => void;
+}) {
   return (
     <main className="title-screen screen-in">
       <section className="hero">
@@ -104,9 +142,12 @@ function Title({ onPlay, onPick }: { onPlay: () => void; onPick: (c: Character) 
           <p className="eyebrow"><span className="live-dot" /> Night Court Arcade</p>
           <h1 className="display hero-title">CURRY<br /><em>TIME<span>.</span></em></h1>
           <p className="hero-description">Pick your baller. Find your release.<br /> Light up the night court.</p>
-          <button className="primary-button hero-play" onClick={onPlay}>
-            <span className="play-mark" aria-hidden="true" /> Play now <span className="button-arrow" aria-hidden="true">↗</span>
-          </button>
+          <div className="hero-actions">
+            <button className="primary-button hero-play" onClick={onPlay}>
+              <span className="play-mark" aria-hidden="true" /> Play now <span className="button-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button className="duel-button" onClick={onDuel}>2 players</button>
+          </div>
         </div>
       </section>
       <section className="quick-lineup" aria-labelledby="lineup-title">
@@ -152,12 +193,22 @@ function playerColor(character: Character) {
   return { "--player-color": character.accent } as CSSProperties;
 }
 
-function CharacterSelect({ onPick, onBack }: { onPick: (c: Character) => void; onBack: () => void }) {
+function CharacterSelect({ playerNumber, firstPlayer, onPick, onBack }: {
+  playerNumber?: 1 | 2;
+  firstPlayer?: Character;
+  onPick: (c: Character) => void;
+  onBack: () => void;
+}) {
   const [scores] = useState(() => Object.fromEntries(characters.map(({ id }) => [id, getHighScore(id)])));
 
   return (
     <main className="selection screen-in">
-      <PlayerHeader title="PICK YOUR BALLER" onBack={onBack} />
+      <PlayerHeader title={playerNumber ? `PLAYER ${playerNumber}, PICK YOUR BALLER` : "PICK YOUR BALLER"} onBack={onBack} />
+      {playerNumber && (
+        <p className="duel-instructions">
+          {firstPlayer ? `Player 1 picked ${firstPlayer.name}. Now pick Player 2.` : "Take five shots each and pass the device after every shot."}
+        </p>
+      )}
       <div className="player-grid">
         {characters.map((character) => (
           <button
@@ -188,8 +239,9 @@ const shots = [
   { id: "three-pointer", label: "Three-pointer", points: 3, description: "Take it from downtown." },
 ] as const;
 
-function ShotSelect({ character, onPick, onBack }: {
+function ShotSelect({ character, opponent, onPick, onBack }: {
   character: Character;
+  opponent?: Character;
   onPick: (shot: ShotKind) => void;
   onBack: () => void;
 }) {
@@ -200,9 +252,10 @@ function ShotSelect({ character, onPick, onBack }: {
           <span className="quick-portrait">
             <Image src={character.sprite} alt="" fill sizes="56px" unoptimized />
           </span>
-          {character.name}
+          {opponent ? `${character.name} vs. ${opponent.name}` : character.name}
         </span>
       </PlayerHeader>
+      {opponent && <p className="duel-instructions">Both players shoot from the same spot.</p>}
       <div className="shot-grid">
         {shots.map(({ id, label, points, description }) => (
           <button className="shot-card" key={id} data-shot={id} onClick={() => onPick(id)}>

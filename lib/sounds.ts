@@ -269,3 +269,16 @@ export function primeAudio() {
   o.start();
   o.stop(c.currentTime + 0.01);
 }
+
+export function playBallBounce() {
+  if (muted) return;
+  const c = getCtx();
+  const hit = c.createOscillator();
+  hit.type = "triangle";
+  hit.frequency.setValueAtTime(142, c.currentTime);
+  hit.frequency.exponentialRampToValueAtTime(62, c.currentTime + 0.075);
+  const env = envGain(c, 0.13, 0.003, 0.13);
+  hit.connect(env.node).connect(c.destination);
+  hit.start();
+  hit.stop(env.stopAt);
+}
