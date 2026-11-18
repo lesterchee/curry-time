@@ -1,6 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import type { Character } from "../data/characters";
 import {
   classifyRimCrossing,
@@ -21,7 +32,8 @@ import { getHighScore, updateHighScore } from "../lib/scoring";
 
 const LOGICAL_W = 1024;
 const LOGICAL_H = 600;
-const FLOOR_Y = 515;
+const PERFECT_LOW = 65;
+const PERFECT_HIGH = 75;
 
 type Phase = "charging" | "flying" | "resolved" | "idle";
 
@@ -34,84 +46,50 @@ type Particle = {
   color: string;
 };
 
-type Trim = { sx: number; sy: number; sw: number; sh: number };
-
-function trimAlpha(img: HTMLImageElement): Trim {
-  const w = img.naturalWidth;
-  const h = img.naturalHeight;
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const cx = c.getContext("2d");
-  if (!cx) return { sx: 0, sy: 0, sw: w, sh: h };
-  cx.drawImage(img, 0, 0);
-  let data: Uint8ClampedArray;
-  try {
-    data = cx.getImageData(0, 0, w, h).data;
-  } catch {
-    return { sx: 0, sy: 0, sw: w, sh: h };
-  }
-  let minX = w;
-  let minY = h;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const a = data[(y * w + x) * 4 + 3];
-      if (a > 12) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < 0) return { sx: 0, sy: 0, sw: w, sh: h };
-  // add a small safety border
-  minX = Math.max(0, minX - 1);
-  minY = Math.max(0, minY - 1);
-  maxX = Math.min(w - 1, maxX + 1);
-  maxY = Math.min(h - 1, maxY + 1);
-  return { sx: minX, sy: minY, sw: maxX - minX + 1, sh: maxY - minY + 1 };
-}
-
 type Props = {
   character: Character;
   shotKind: ShotKind;
+  soundControl: ReactNode;
   onExit: () => void;
   onChangeShot: () => void;
 };
 
-export default function Game({ character, shotKind, onExit, onChangeShot }: Props) {
+export default function Game({ character, shotKind, soundControl, onExit, onChangeShot }: Props) {
+  const gameRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<number | "keyboard" | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number>(0);
 
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [highScore, setHighScore] = useState(0);
+  const [highScore, setHighScore] = useState(() => getHighScore(character.id));
+  const cfg = getShotConfig(shotKind);
   const [phase, setPhase] = useState<Phase>("idle");
   const [banner, setBanner] = useState<Outcome | null>(null);
   const [powerPct, setPowerPct] = useState(0);
-  const [meterShake, setMeterShake] = useState(0);
+  const [newBest, setNewBest] = useState(false);
 
   // refs for the game loop (avoid stale closures)
   const stateRef = useRef({
     phase: "idle" as Phase,
     charging: false,
     chargeStart: 0,
-    releasePower: 0,
-    ball: { x: 0, y: 0, vx: 0, vy: 0, rotation: 0, rotationSpeed: 0 },
+    ball: { x: cfg.releaseX, y: cfg.releaseY, vx: 0, vy: 0, rotation: 0, rotationSpeed: 0 },
     outcome: null as Outcome | null,
     pendingOutcome: null as Outcome | null,
-    resolvedPending: false,
     rimCrossed: false,
-    outcomeT: 0,
     particles: [] as Particle[],
+    trail: [] as { x: number; y: number }[],
+    score: 0,
+    best: highScore,
+    reduceMotion: false,
+    portrait: false,
+    spriteScaleX: 1,
+    spriteScaleY: 1,
     netWiggleT: 0,
     rimShakeT: 0,
-    releaseTime: 0,
-    cfg: getShotConfig(shotKind),
+    cfg,
     characterFrame: 0, // 0 idle, 1 crouch, 2 release
     imgs: {
       court: null as HTMLImageElement | null,
@@ -119,131 +97,54 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       hoop: null as HTMLImageElement | null,
       char: null as HTMLImageElement | null,
     },
-    trims: {
-      ball: null as Trim | null,
-      hoop: null as Trim | null,
-      char: null as Trim | null,
-    },
     lastTickSoundT: 0,
   });
 
-  // load images
   useEffect(() => {
     const s = stateRef.current;
-    const load = (src: string) =>
-      new Promise<HTMLImageElement>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = src;
-      });
-    void Promise.all([
-      load("/court-background.png"),
-      load("/basketball.png"),
-      load("/hoop.png"),
-      load(character.sprite),
-    ]).then(([court, ball, hoop, char]) => {
-      s.imgs = { court, ball, hoop, char };
-      s.trims = {
-        ball: trimAlpha(ball),
-        hoop: trimAlpha(hoop),
-        char: trimAlpha(char),
-      };
+    const sources = {
+      court: "/arcade/night-court.webp",
+      ball: "/arcade/ball.webp",
+      hoop: "/arcade/hoop.webp",
+      char: character.sprite,
+    } as const;
+    const images = (Object.keys(sources) as (keyof typeof sources)[]).map((key) => {
+      const img = new window.Image();
+      img.onload = () => { s.imgs[key] = img; };
+      img.src = sources[key];
+      return img;
     });
+    return () => images.forEach((img) => { img.onload = null; });
   }, [character.sprite]);
-
-  // update cfg when shotKind changes
-  useEffect(() => {
-    stateRef.current.cfg = getShotConfig(shotKind);
-    resetBall();
-  }, [shotKind]);
-
-  // load high score
-  useEffect(() => {
-    setHighScore(getHighScore(character.id));
-  }, [character.id]);
 
   const resetBall = useCallback(() => {
     const s = stateRef.current;
     const cfg = s.cfg;
-    s.ball = {
-      x: cfg.releaseX,
-      y: cfg.releaseY,
-      vx: 0,
-      vy: 0,
-      rotation: 0,
-      rotationSpeed: 0,
-    };
+    inputRef.current = null;
+    s.charging = false;
+    s.ball = { x: cfg.releaseX, y: cfg.releaseY, vx: 0, vy: 0, rotation: 0, rotationSpeed: 0 };
     s.phase = "idle";
     s.outcome = null;
     s.pendingOutcome = null;
-    s.resolvedPending = false;
     s.rimCrossed = false;
     s.particles = [];
+    s.trail = [];
     s.characterFrame = 0;
     setPhase("idle");
     setBanner(null);
     setPowerPct(0);
+    setNewBest(false);
   }, []);
 
   useEffect(() => {
-    resetBall();
-  }, [resetBall, character.id, shotKind]);
-
-  // main loop
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    let lastT = performance.now();
-    let running = true;
-
-    function resize() {
-      const c = canvasRef.current;
-      if (!c) return;
-      const container = containerRef.current;
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const scale = Math.min(rect.width / LOGICAL_W, rect.height / LOGICAL_H);
-      const w = Math.floor(LOGICAL_W * scale);
-      const h = Math.floor(LOGICAL_H * scale);
-      c.width = Math.floor(w * dpr);
-      c.height = Math.floor(h * dpr);
-      c.style.width = `${w}px`;
-      c.style.height = `${h}px`;
-      ctx!.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
-    }
-    resize();
-    window.addEventListener("resize", resize);
-    window.addEventListener("orientationchange", resize);
-
-    const tick = (now: number) => {
-      if (!running) return;
-      const dt = Math.min(0.033, (now - lastT) / 1000);
-      lastT = now;
-      update(dt, now);
-      draw(ctx);
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafRef.current);
-      window.removeEventListener("resize", resize);
-      window.removeEventListener("orientationchange", resize);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    gameRef.current?.focus({ preventScroll: true });
   }, []);
 
   function currentPower(t: number): number {
     // oscillate 0→100→0 over 1.4s cycle
     const s = stateRef.current;
     if (!s.charging) return 0;
-    const elapsed = (t - s.chargeStart) / 1000;
+    const elapsed = Math.max(0, t - s.chargeStart) / 1000;
     const period = 1.4;
     const phaseF = (elapsed % period) / period;
     // triangle wave: 0→1→0
@@ -272,6 +173,12 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.rotation += b.rotationSpeed * dt;
+      if (!s.reduceMotion && !s.rimCrossed) {
+        s.trail.push({ x: b.x, y: b.y });
+        if (s.trail.length > 12) s.trail.shift();
+      } else if (s.trail.length) {
+        s.trail.shift();
+      }
 
       // Detect the single descending crossing of the rim plane. This is the
       // only place we classify hit/miss — outcome is entirely a function of
@@ -302,13 +209,14 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     if (s.rimShakeT > 0) s.rimShakeT = Math.max(0, s.rimShakeT - dt);
 
     // particles
-    for (const p of s.particles) {
-      p.vy += 600 * dt;
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      p.life -= dt;
+    if (s.particles.length) {
+      s.particles = s.particles.flatMap((p) => {
+        const life = p.life - dt;
+        if (life <= 0) return [];
+        const vy = p.vy + 600 * dt;
+        return [{ ...p, life, vy, x: p.x + p.vx * dt, y: p.y + vy * dt }];
+      });
     }
-    s.particles = s.particles.filter((p) => p.life > 0);
   }
 
   function resolveOutcome(outcome: Outcome) {
@@ -320,14 +228,12 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
     if (outcome === "swish" || outcome === "rim-in") {
       playCheer();
-      confettiBurst();
-      const points = s.cfg.points;
-      setScore((x) => {
-        const next = x + points;
-        const hi = updateHighScore(character.id, next);
-        setHighScore(hi);
-        return next;
-      });
+      if (!s.reduceMotion) confettiBurst();
+      s.score += s.cfg.points;
+      setNewBest(s.score > s.best);
+      s.best = Math.max(s.best, updateHighScore(character.id, s.score));
+      setScore(s.score);
+      setHighScore(s.best);
       setStreak((x) => x + 1);
     } else {
       playBoo();
@@ -339,8 +245,8 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     const s = stateRef.current;
     const cx = s.cfg.rimX;
     const cy = s.cfg.rimY + 40;
-    const colors = ["#ffd84a", "#ff8a00", "#1e73ff", "#e23b3b", "#8b2df0", "#19e65a"];
-    for (let i = 0; i < 60; i++) {
+    const colors = ["#d4fb72", "#ffc06e", "#ff9353", "#65b7ff", "#f5f6fb"];
+    for (let i = 0; i < 38; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 160 + Math.random() * 200;
       s.particles.push({
@@ -355,66 +261,75 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
   }
 
   // draw frame
-  function draw(ctx: CanvasRenderingContext2D) {
+  function draw(ctx: CanvasRenderingContext2D, now: number) {
     const s = stateRef.current;
     const cfg = s.cfg;
 
-    // background
     if (s.imgs.court) {
-      ctx.drawImage(s.imgs.court, 0, 0, LOGICAL_W, LOGICAL_H);
+      if (s.portrait) {
+        const { width, height } = ctx.canvas;
+        const sourceWidth = s.imgs.court.height * width / height;
+        ctx.save();
+        ctx.resetTransform();
+        ctx.drawImage(s.imgs.court, (s.imgs.court.width - sourceWidth) / 2, 0, sourceWidth, s.imgs.court.height, 0, 0, width, height);
+        ctx.restore();
+      } else {
+        ctx.drawImage(s.imgs.court, 0, 0, LOGICAL_W, LOGICAL_H);
+      }
     } else {
-      ctx.fillStyle = "#7a3b1a";
-      ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+      ctx.fillStyle = "#101b30";
+      ctx.save();
+      ctx.resetTransform();
+      ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.restore();
     }
 
-    // character first (behind ball)
-    drawCharacter(ctx, s);
-    // ball
-    drawBall(ctx, s);
-    // hoop drawn AFTER ball so the rim + net occlude the ball as it passes
-    // through → ball visibly drops behind the rim ring and net ropes
-    drawHoop(ctx, s);
-    // particles
-    for (const p of s.particles) {
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x - 4, p.y - 4, 8, 8);
-    }
-
-    // trajectory preview during charging
     if (s.charging) {
-      const power = Math.max(currentPower(performance.now()), 1);
-      const v = powerToVelocity(power, cfg);
-      drawTrajectory(ctx, cfg, v);
+      const power = Math.max(currentPower(now), 1);
+      drawTrajectory(ctx, cfg, powerToVelocity(power, cfg), power >= PERFECT_LOW && power <= PERFECT_HIGH);
     }
 
-    void cfg;
+    drawCharacter(ctx, s);
+    s.trail.forEach(({ x, y }, index) => {
+      const weight = (index + 1) / s.trail.length;
+      ctx.fillStyle = `rgba(255, 149, 77, ${weight * 0.22})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, weight * 18 * s.spriteScaleX, weight * 18 * s.spriteScaleY, 0, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    drawBall(ctx, s);
+    drawHoop(ctx, s, now);
+
+    ctx.save();
+    for (const p of s.particles) {
+      ctx.globalAlpha = Math.min(1, p.life * 2);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      const radius = 2.5 + p.life;
+      ctx.ellipse(p.x, p.y, radius * s.spriteScaleX, radius * s.spriteScaleY, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
-  function drawHoop(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
+  function drawHoop(ctx: CanvasRenderingContext2D, s: typeof stateRef.current, now: number) {
     const cfg = s.cfg;
     const img = s.imgs.hoop;
-    const trim = s.trims.hoop;
-    const shake = s.rimShakeT > 0 ? (Math.random() - 0.5) * 8 : 0;
-    if (img && trim) {
-      // New hoop art: backboard on right, rim opening on left (facing shooter).
-      // Rim ring in the trimmed image is at approximately (0.33, 0.50).
-      const targetH = 210;
-      const aspect = trim.sw / trim.sh;
+    const shake = s.rimShakeT > 0 && !s.reduceMotion ? (Math.random() - 0.5) * 8 : 0;
+    if (img) {
+      // Align the center of the rim artwork to the physics rim.
+      const targetH = s.portrait ? 148 : 172;
+      const aspect = img.naturalWidth / img.naturalHeight;
       const targetW = targetH * aspect;
-      const rimFracX = 0.33;
-      const rimFracY = 0.5;
-      const drawX = cfg.rimX - targetW * rimFracX;
-      const drawY = cfg.rimY - targetH * rimFracY;
+      const rimFracX = 0.30;
+      const rimFracY = 0.58;
       ctx.save();
-      ctx.translate(shake, shake * 0.4);
+      ctx.translate(cfg.rimX + shake, cfg.rimY + shake * 0.4);
+      ctx.scale(s.spriteScaleX, s.spriteScaleY);
       ctx.drawImage(
         img,
-        trim.sx,
-        trim.sy,
-        trim.sw,
-        trim.sh,
-        drawX,
-        drawY,
+        -targetW * rimFracX,
+        -targetH * rimFracY,
         targetW,
         targetH,
       );
@@ -424,22 +339,23 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       ctx.fillRect(cfg.rimX - cfg.rimOuter, cfg.rimY - 4, cfg.rimOuter * 2, 6);
     }
 
-    // net wiggle overlay (a few animated lines beneath rim)
-    if (s.netWiggleT > 0) {
+    if (s.netWiggleT > 0 && !s.reduceMotion) {
       ctx.save();
+      ctx.translate(cfg.rimX, cfg.rimY);
+      ctx.scale(s.spriteScaleX, s.spriteScaleY);
       ctx.strokeStyle = "rgba(255,255,255,0.95)";
       ctx.lineWidth = 2;
-      const t = performance.now() / 80;
+      const t = now / 80;
       for (let i = -2; i <= 2; i++) {
-        const x = cfg.rimX + i * 6;
+        const x = i * 6;
         const wiggle = Math.sin(t + i) * 4 * s.netWiggleT;
         ctx.beginPath();
-        ctx.moveTo(x, cfg.rimY + 8);
+        ctx.moveTo(x, 8);
         ctx.quadraticCurveTo(
           x + wiggle,
-          cfg.rimY + 22,
+          22,
           x + wiggle * 0.3,
-          cfg.rimY + 40,
+          40,
         );
         ctx.stroke();
       }
@@ -449,24 +365,16 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
   function drawCharacter(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
     const img = s.imgs.char;
-    const trim = s.trims.char;
     const cfg = s.cfg;
-    if (!img || !trim) return;
+    if (!img) return;
 
     const targetH = 220;
-    const aspect = trim.sw / trim.sh;
+    const aspect = img.naturalWidth / img.naturalHeight;
     const targetW = targetH * aspect;
 
-    // All three character sprites have their ball-hand at roughly
-    // (0.22, 0.10) of the trimmed bbox. Position the sprite so this
-    // hand anchor lands at (releaseX, releaseY). Then the physics ball
-    // drawn at release position lines up with the hand exactly.
-    const handFracX = 0.22;
-    const handFracY = 0.1;
-    const spriteLeft = cfg.releaseX - handFracX * targetW;
-    const spriteTop = cfg.releaseY - handFracY * targetH;
-    const feetY = spriteTop + targetH;
-    const centerX = spriteLeft + targetW / 2;
+    const [handFracX, handFracY] = character.hand;
+    const feetY = cfg.releaseY + (1 - handFracY) * targetH * s.spriteScaleY;
+    const centerX = cfg.releaseX + (0.5 - handFracX) * targetW * s.spriteScaleX;
 
     // floor drop shadow — sits just below feet
     ctx.save();
@@ -486,13 +394,10 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
       skewX = -0.03;
     }
     ctx.translate(centerX, feetY);
+    ctx.scale(s.spriteScaleX, s.spriteScaleY);
     ctx.transform(1, 0, skewX, scaleY, 0, 0);
     ctx.drawImage(
       img,
-      trim.sx,
-      trim.sy,
-      trim.sw,
-      trim.sh,
       -targetW / 2,
       -targetH,
       targetW,
@@ -504,18 +409,15 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
   function drawBall(ctx: CanvasRenderingContext2D, s: typeof stateRef.current) {
     const b = s.ball;
     const img = s.imgs.ball;
-    const trim = s.trims.ball;
     const size = 46;
     ctx.save();
-    ctx.translate(b.x, b.y);
+    const crouchOffset = s.charging ? 220 * (1 - character.hand[1]) * 0.06 : 0;
+    ctx.translate(b.x, b.y + crouchOffset * s.spriteScaleY);
+    ctx.scale(s.spriteScaleX, s.spriteScaleY);
     ctx.rotate(b.rotation);
-    if (img && trim) {
+    if (img) {
       ctx.drawImage(
         img,
-        trim.sx,
-        trim.sy,
-        trim.sw,
-        trim.sh,
         -size / 2,
         -size / 2,
         size,
@@ -534,10 +436,12 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     ctx: CanvasRenderingContext2D,
     cfg: ReturnType<typeof getShotConfig>,
     v: number,
+    perfect: boolean,
   ) {
     ctx.save();
-    ctx.setLineDash([8, 10]);
-    ctx.strokeStyle = "rgba(255, 216, 74, 0.7)";
+    ctx.setLineDash([3, 12]);
+    ctx.lineCap = "round";
+    ctx.strokeStyle = perfect ? "#d4fb72" : "#ffd0a0c9";
     ctx.lineWidth = 3;
     ctx.beginPath();
     const cos = Math.cos(cfg.angle);
@@ -553,35 +457,64 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     ctx.restore();
   }
 
-  // input handlers
-  const onPointerDown = (e: React.PointerEvent) => {
-    e.preventDefault();
+  function startCharge(now: number) {
     const s = stateRef.current;
-    if (s.phase === "flying") return;
     if (s.phase === "resolved") {
-      // tap to shoot again
       resetBall();
-      return;
+      return false;
     }
+    if (s.phase !== "idle") return false;
     s.charging = true;
-    s.chargeStart = performance.now();
+    s.chargeStart = now;
     s.phase = "charging";
-    setPhase("charging");
     s.characterFrame = 1;
-  };
+    setPhase("charging");
+    return true;
+  }
 
-  const onPointerUp = (e: React.PointerEvent) => {
-    e.preventDefault();
+  function releaseCharge(now: number) {
     const s = stateRef.current;
-    if (!s.charging) return;
-    const p = currentPower(performance.now());
+    const power = currentPower(now);
     s.charging = false;
-    s.releasePower = p;
-    setPowerPct(p);
     s.characterFrame = 2;
-    setMeterShake(Date.now());
-    launch(p);
-  };
+    setPowerPct(power);
+    launch(power);
+  }
+
+  function onPointerDown(event: PointerEvent<HTMLCanvasElement | HTMLButtonElement>) {
+    if (event.button !== 0 || inputRef.current !== null) return;
+    if (event.currentTarget instanceof HTMLCanvasElement) event.preventDefault();
+    if (!startCharge(event.timeStamp)) return;
+    inputRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onPointerUp(event: PointerEvent<HTMLCanvasElement | HTMLButtonElement>) {
+    if (inputRef.current !== event.pointerId) return;
+    inputRef.current = null;
+    releaseCharge(event.timeStamp);
+  }
+
+  function onPointerCancel(event: PointerEvent<HTMLCanvasElement | HTMLButtonElement>) {
+    if (inputRef.current === event.pointerId) resetBall();
+  }
+
+  function onShootKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.target !== gameRef.current && !(event.target as HTMLElement).closest(".shoot-button")) return;
+    if (event.code !== "Space" && event.code !== "Enter") return;
+    event.preventDefault();
+    if (event.repeat || inputRef.current !== null) return;
+    if (startCharge(event.timeStamp)) inputRef.current = "keyboard";
+  }
+
+  function onShootKeyUp(event: KeyboardEvent<HTMLDivElement>) {
+    if ((event.code !== "Space" && event.code !== "Enter") || inputRef.current !== "keyboard") return;
+    event.preventDefault();
+    inputRef.current = null;
+    releaseCharge(event.timeStamp);
+  }
+
+  const shotInput = { onPointerDown, onPointerUp, onPointerCancel, onLostPointerCapture: onPointerCancel };
 
   function launch(power: number) {
     const s = stateRef.current;
@@ -590,7 +523,6 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
 
     s.pendingOutcome = null;
     s.outcome = null;
-    s.resolvedPending = false;
     s.rimCrossed = false;
 
     s.ball = {
@@ -652,161 +584,173 @@ export default function Game({ character, shotKind, onExit, onChangeShot }: Prop
     s.pendingOutcome = "air-ball";
   }
 
-  const perfectLow = 65;
-  const perfectHigh = 75;
+  const renderFrame = useEffectEvent((ctx: CanvasRenderingContext2D, dt: number, now: number) => {
+    update(dt, now);
+    draw(ctx, now);
+  });
+
+  // main loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const s = stateRef.current;
+    const updateMotion = () => { s.reduceMotion = motion.matches; };
+    updateMotion();
+    motion.addEventListener("change", updateMotion);
+
+    let lastT = performance.now();
+    let running = true;
+
+    function resize() {
+      const c = canvasRef.current;
+      if (!c) return;
+      const container = containerRef.current;
+      if (!container) return;
+      const { clientWidth, clientHeight } = container;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const scale = Math.min(clientWidth / LOGICAL_W, clientHeight / LOGICAL_H);
+      s.portrait = clientWidth < clientHeight;
+      const w = s.portrait ? clientWidth : Math.floor(LOGICAL_W * scale);
+      const h = s.portrait ? clientHeight : Math.floor(LOGICAL_H * scale);
+      c.width = Math.max(1, Math.floor(w * dpr));
+      c.height = Math.max(1, Math.floor(h * dpr));
+      c.style.width = `${w}px`;
+      c.style.height = `${h}px`;
+      const xScale = c.width / LOGICAL_W;
+      const yScale = c.height / LOGICAL_H;
+      // Open up the vertical shot path on portrait screens while keeping the sprites proportional.
+      s.spriteScaleX = s.portrait ? 1.2 : 1;
+      s.spriteScaleY = s.portrait ? 1.2 * xScale / yScale : 1;
+      ctx!.setTransform(xScale, 0, 0, yScale, 0, s.portrait ? c.height * 0.13 : 0);
+    }
+    resize();
+    const observer = new ResizeObserver(resize);
+    if (containerRef.current) observer.observe(containerRef.current);
+
+    const tick = (now: number) => {
+      if (!running) return;
+      const dt = Math.min(0.033, (now - lastT) / 1000);
+      lastT = now;
+      renderFrame(ctx, dt, now);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      running = false;
+      cancelAnimationFrame(rafRef.current);
+      observer.disconnect();
+      motion.removeEventListener("change", updateMotion);
+    };
+  }, []);
+
+  const inZone = powerPct >= PERFECT_LOW && powerPct <= PERFECT_HIGH;
+  const modeLabel = shotKind === "free-throw" ? "Free throw" : "Three-pointer";
+  const hint = phase === "charging"
+    ? inZone ? "Release now!" : "Aim for the green zone"
+    : phase === "flying" ? "Ball in flight"
+    : phase === "resolved" ? "Ready for another?"
+    : "Hold to charge · Release in the green zone";
 
   return (
-    <div ref={containerRef} className="fixed inset-0 flex items-center justify-center bg-black">
-      <div className="relative w-full h-full flex items-center justify-center">
-        <canvas
-          ref={canvasRef}
-          className="max-w-full max-h-full block"
-          onPointerDown={onPointerDown}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onPointerLeave={(e) => {
-            const s = stateRef.current;
-            if (s.charging) onPointerUp(e);
-          }}
-          style={{ touchAction: "none" }}
-        />
-        {/* HUD overlay */}
-        <div className="pointer-events-none absolute inset-0">
-          {/* Top-left control cluster */}
-          <div className="absolute top-3 left-3 flex gap-2 pointer-events-auto z-20">
-            <button
-              onClick={onExit}
-              className="btn-arcade bg-yellow-400 text-black rounded-2xl px-4 py-3 text-base md:text-lg font-black"
-            >
-              ← MENU
-            </button>
-            <button
-              onClick={onChangeShot}
-              className="btn-arcade bg-blue-500 text-white rounded-2xl px-4 py-3 text-base md:text-lg font-black"
-            >
-              {shotKind === "free-throw" ? "FT · 1PT" : "3PT · 3PT"}
-            </button>
+    <main
+      ref={gameRef}
+      className="game-shell"
+      tabIndex={-1}
+      onKeyDown={onShootKeyDown}
+      onKeyUp={onShootKeyUp}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget) && inputRef.current === "keyboard") resetBall();
+      }}
+    >
+      <header className="game-topbar">
+        <div className="game-nav">
+          <button className="game-nav-button" onClick={onExit}><span aria-hidden="true">←</span> Menu</button>
+          <button className="game-nav-button" aria-label={`Change shot (${modeLabel})`} onClick={onChangeShot}>
+            {shotKind === "free-throw" ? "FT · 1 PT" : "3 PT"}
+          </button>
+        </div>
+        <span className="display game-court-name">Night Court</span>
+        {soundControl}
+      </header>
+      <div className="scoreboard" aria-label="Scoreboard">
+        <div className="score-player" style={{ "--player-color": character.accent } as CSSProperties}>
+          <span className="quick-portrait">
+            <Image src={character.sprite} alt="" fill sizes="43px" unoptimized />
+          </span>
+          <span className="display">{character.name}</span>
+        </div>
+        <div className="score-numbers">
+          <div className="score-stat"><small>Score</small><b className="display" data-score>{score}</b></div>
+          <div className="score-stat"><small>Best</small><b className="display" data-best>{highScore}</b></div>
+          <div className={`score-stat${streak >= 3 ? " is-heating" : ""}`}>
+            <small>Streak</small><b className="display" data-streak>{streak}</b>
           </div>
-
-          {/* Top-center scoreboard plate */}
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 flex flex-col items-center z-20">
-            <div className="btn-arcade bg-black/85 border-4 border-black rounded-2xl px-5 py-2 flex items-center gap-4">
-              <div
-                className="arcade-text arcade-stroke text-4xl md:text-5xl font-black leading-none"
-                style={{ color: "#ffd84a" }}
-              >
-                {score}
-              </div>
-              <div className="flex flex-col items-start leading-none gap-0.5">
-                <span className="text-[10px] md:text-xs font-black text-white/70 tracking-widest">
-                  HIGH
-                </span>
-                <span className="text-base md:text-lg font-black text-white arcade-stroke">
-                  {Math.max(highScore, score)}
-                </span>
-              </div>
-            </div>
-            {streak >= 3 && (
-              <div className="anim-pop arcade-text text-orange-400 text-xl md:text-2xl font-black mt-2 arcade-stroke">
-                🔥 STREAK: {streak}
-              </div>
-            )}
-          </div>
-
-          {/* Power meter — absolute right side, always on-screen */}
-          <div
-            className="absolute right-4 top-1/2 -translate-y-1/2 w-[72px] md:w-20 h-[55%] bg-black/80 border-4 border-black rounded-2xl overflow-hidden z-10 flex flex-col"
-            key={meterShake}
-          >
-            <div className="pt-2 pb-1 text-center text-white text-xs md:text-sm font-black arcade-stroke border-b-2 border-white/20">
-              PWR
-            </div>
-            <div className="relative flex-1">
-              <div
-                className="absolute left-0 right-0 bg-green-400/40 border-y-2 border-green-300"
-                style={{
-                  bottom: `${perfectLow}%`,
-                  height: `${perfectHigh - perfectLow}%`,
-                }}
-              />
-              <div
-                className="absolute bottom-0 left-0 right-0 transition-none"
-                style={{
-                  height: `${powerPct}%`,
-                  background:
-                    powerPct >= perfectLow && powerPct <= perfectHigh
-                      ? "linear-gradient(to top, #19e65a, #8cff8c)"
-                      : "linear-gradient(to top, #ff8a00, #ffd84a)",
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Instructions / status strip */}
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-10">
-            {phase === "idle" && (
-              <div className="anim-pulse bg-black/80 text-white rounded-2xl px-5 py-3 text-base md:text-xl font-black arcade-stroke border-4 border-black">
-                HOLD to charge · RELEASE to shoot
-              </div>
-            )}
-            {phase === "charging" && (
-              <div className="bg-black/80 text-yellow-300 rounded-2xl px-5 py-3 text-base md:text-xl font-black arcade-stroke border-4 border-black">
-                AIM FOR THE GREEN ZONE
-              </div>
-            )}
-          </div>
-
-          {/* SHOOT AGAIN button */}
-          {phase === "resolved" && (
-            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 pointer-events-auto z-30">
-              <button
-                onClick={() => resetBall()}
-                className="btn-arcade bg-orange-500 text-white rounded-2xl px-8 py-4 text-2xl md:text-3xl font-black arcade-stroke"
-              >
-                SHOOT AGAIN
-              </button>
-            </div>
-          )}
-
-          {/* Outcome banner — z-40 so it's on top of character/hoop/ball */}
-          {banner && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
-              <div className="anim-pop">
-                <OutcomeBanner outcome={banner} shotKind={shotKind} />
-              </div>
-            </div>
-          )}
         </div>
       </div>
-    </div>
+      <div className="arena" ref={containerRef}>
+        <canvas ref={canvasRef} aria-label="Basketball court" {...shotInput} />
+        {banner && <OutcomeBanner outcome={banner} points={shotKind === "free-throw" ? 1 : 3} newBest={newBest} />}
+      </div>
+      <div className="controls">
+        <div>
+          <div className="meter-head">
+            <span className="meter-label">Shot power</span>
+            <output aria-live="off">{powerPct}%</output>
+          </div>
+          <div
+            className="power-track"
+            role="meter"
+            aria-label="Shot power, aim for 65 to 75 percent"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={powerPct}
+          >
+            <div className={`power-fill${inZone ? " is-perfect" : ""}`} style={{ width: `${powerPct}%` }} />
+            <div className="power-zone" />
+            {powerPct > 0 && <div className="power-needle" style={{ left: `${powerPct}%` }} />}
+          </div>
+          <p className="control-hint" id="shoot-hint">{hint}</p>
+        </div>
+        <button
+          className={`primary-button shoot-button${phase === "charging" ? " is-charging" : ""}`}
+          aria-describedby="shoot-hint"
+          aria-keyshortcuts="Space Enter"
+          aria-disabled={phase === "flying" || undefined}
+          {...shotInput}
+          onClick={(event) => {
+            if (event.detail === 0 && stateRef.current.phase === "resolved") resetBall();
+          }}
+        >
+          {phase === "resolved" ? "Shoot again" : phase === "charging" ? "Release to shoot" : phase === "flying" ? "Shooting…" : "Hold to shoot"}
+        </button>
+      </div>
+    </main>
   );
 }
 
-function OutcomeBanner({
-  outcome,
-  shotKind,
-}: {
-  outcome: Outcome;
-  shotKind: ShotKind;
-}) {
+function OutcomeBanner({ outcome, points, newBest }: { outcome: Outcome; points: number; newBest: boolean }) {
   const isMake = outcome === "swish" || outcome === "rim-in";
-  const color = isMake ? "#19e65a" : "#ff3b3b";
-  const text =
-    outcome === "swish"
-      ? shotKind === "three-pointer"
-        ? "SPLASH! +3"
-        : "SWISH! +1"
-      : outcome === "rim-in"
-        ? "LUCKY!"
-        : outcome === "rim-out"
-          ? "SO CLOSE!"
-          : "AIR BALL!";
+  const title = {
+    swish: points === 3 ? "SPLASH!" : "SWISH!",
+    "rim-in": "LUCKY!",
+    "rim-out": "SO CLOSE!",
+    "air-ball": "AIR BALL!",
+  }[outcome];
+  const detail = isMake
+    ? `+${points} ${points === 1 ? "point" : "points"}${newBest ? " · New best" : ""}`
+    : "Try the green zone";
+
   return (
-    <div
-      className="arcade-text arcade-stroke text-5xl sm:text-6xl md:text-8xl font-black text-center px-4"
-      style={{ color, textShadow: "6px 6px 0 #000, -3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000" }}
-    >
-      {text}
+    <div className="result-wrap" role="status">
+      <div className="result-banner" data-made={isMake}>
+        <div className="display">{title}</div>
+        <p>{detail}</p>
+      </div>
     </div>
   );
 }

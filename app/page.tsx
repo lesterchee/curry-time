@@ -1,288 +1,225 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import Image from "next/image";
+import { useState, type CSSProperties } from "react";
 import { characters, getCharacter, type Character } from "../data/characters";
 import { isMuted, primeAudio, setMuted, startMusic } from "../lib/sounds";
 import type { ShotKind } from "../lib/physics";
 import { getHighScore } from "../lib/scoring";
 
-const Game = dynamic(() => import("../components/Game"), { ssr: false });
+const Game = dynamic(() => import("../components/Game"), {
+  ssr: false,
+  loading: () => <p className="court-loading" role="status">Loading the court…</p>,
+});
 
 type Screen = "title" | "character" | "shot" | "play";
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("title");
-  const [characterId, setCharacterId] = useState<string>(characters[0].id);
+  const [characterId, setCharacterId] = useState(characters[0].id);
   const [shotKind, setShotKind] = useState<ShotKind>("free-throw");
   const [muted, setMutedState] = useState(false);
 
   function toggleMute() {
-    const next = !muted;
-    setMutedState(next);
-    setMuted(next);
+    setMuted(!muted);
+    setMutedState(!muted);
   }
 
-  function start() {
+  function changeScreen(next: Screen) {
+    setScreen(next);
+    window.scrollTo(0, 0);
+  }
+
+  function start(character?: Character) {
     primeAudio();
     if (!isMuted()) startMusic();
-    setScreen("character");
+    if (character) {
+      setCharacterId(character.id);
+      changeScreen("shot");
+    } else {
+      changeScreen("character");
+    }
+  }
+
+  const sound = (
+    <button
+      className="sound-toggle"
+      aria-label={muted ? "Unmute" : "Mute"}
+      onClick={toggleMute}
+    >
+      <span className={muted ? "sound-bars is-muted" : "sound-bars"} aria-hidden="true">
+        <i /><i /><i /><i /><i />
+      </span>
+      <span>Sound {muted ? "off" : "on"}</span>
+    </button>
+  );
+
+  if (screen === "play") {
+    return (
+      <Game
+        key={`${characterId}:${shotKind}`}
+        character={getCharacter(characterId)}
+        shotKind={shotKind}
+        soundControl={sound}
+        onExit={() => changeScreen("title")}
+        onChangeShot={() => changeScreen("shot")}
+      />
+    );
   }
 
   return (
-    <div className="w-full h-full">
-      {screen === "title" && <Title onPlay={start} muted={muted} onToggleMute={toggleMute} />}
-      {screen === "character" && (
-        <CharacterSelect
-          onPick={(c) => {
-            setCharacterId(c.id);
-            setScreen("shot");
-          }}
-          onBack={() => setScreen("title")}
-        />
-      )}
+    <div className="arcade-shell">
+      <header className="site-header">
+        <button className="brand" aria-label="Curry Time home" onClick={() => changeScreen("title")}>
+          <span className="brand-mark" aria-hidden="true">CT</span>
+          <span>CURRY <em>TIME</em></span>
+        </button>
+        {sound}
+      </header>
+      {screen === "title" && <Title onPlay={() => start()} onPick={start} />}
+      {screen === "character" && <CharacterSelect onPick={start} onBack={() => changeScreen("title")} />}
       {screen === "shot" && (
         <ShotSelect
           character={getCharacter(characterId)}
-          onPick={(s) => {
-            setShotKind(s);
-            setScreen("play");
+          onPick={(shot) => {
+            setShotKind(shot);
+            changeScreen("play");
           }}
-          onBack={() => setScreen("character")}
+          onBack={() => changeScreen("character")}
         />
       )}
-      {screen === "play" && (
-        <Game
-          character={getCharacter(characterId)}
-          shotKind={shotKind}
-          onExit={() => setScreen("title")}
-          onChangeShot={() => setScreen("shot")}
-        />
-      )}
-      {/* persistent mute button — bottom-left so it never clashes with score HUD */}
-      <button
-        aria-label={muted ? "Unmute" : "Mute"}
-        onClick={toggleMute}
-        className="btn-arcade fixed bottom-3 left-3 z-50 bg-black/80 text-white rounded-full w-14 h-14 flex items-center justify-center text-2xl border-4 border-black"
-      >
-        {muted ? "🔇" : "🔊"}
-      </button>
     </div>
   );
 }
 
-function Title({
-  onPlay,
-  muted,
-  onToggleMute,
-}: {
-  onPlay: () => void;
-  muted: boolean;
-  onToggleMute: () => void;
-}) {
+function Title({ onPlay, onPick }: { onPlay: () => void; onPick: (c: Character) => void }) {
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center gap-8 p-6 overflow-hidden">
-      {/* bouncing basketballs background */}
-      <BasketballBackground />
-      <div className="relative z-10 flex flex-col items-center gap-4 text-center">
-        <div className="flex items-center justify-center gap-3">
-          <img
-            src="/basketball.png"
-            alt=""
-            className="w-16 h-16 md:w-24 md:h-24 anim-spin"
-          />
-          <h1
-            className="arcade-text arcade-stroke text-6xl md:text-9xl font-black"
-            style={{
-              color: "#ffd84a",
-              textShadow:
-                "6px 6px 0 #000, -4px -4px 0 #000, 4px -4px 0 #000, -4px 4px 0 #000, 0 0 40px rgba(255,138,0,0.8)",
-            }}
-          >
-            CURRY TIME
-          </h1>
-          <img
-            src="/basketball.png"
-            alt=""
-            className="w-16 h-16 md:w-24 md:h-24 anim-spin"
-          />
+    <main className="title-screen screen-in">
+      <section className="hero">
+        <div className="hero-art" aria-hidden="true">
+          <Image src="/arcade/night-court-cover.webp" alt="" fill preload unoptimized />
         </div>
-        <p className="text-white text-2xl md:text-4xl font-black arcade-stroke">
-          ARCADE HOOPS
-        </p>
-      </div>
-
-      <button
-        onClick={onPlay}
-        className="relative z-10 btn-arcade bg-orange-500 text-white rounded-3xl px-16 py-8 text-4xl md:text-6xl font-black arcade-stroke anim-pulse"
-      >
-        ▶ PLAY
-      </button>
-
-      <p className="relative z-10 text-white/80 text-sm md:text-lg font-bold text-center max-w-md">
-        Hold the screen to charge your shot. Release in the green zone for a SWISH!
-      </p>
-    </div>
+        <div className="hero-content">
+          <p className="eyebrow"><span className="live-dot" /> Night Court Arcade</p>
+          <h1 className="display hero-title">CURRY<br /><em>TIME<span>.</span></em></h1>
+          <p className="hero-description">Pick your baller. Find your release.<br /> Light up the night court.</p>
+          <button className="primary-button hero-play" onClick={onPlay}>
+            <span className="play-mark" aria-hidden="true" /> Play now <span className="button-arrow" aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </section>
+      <section className="quick-lineup" aria-labelledby="lineup-title">
+        <div className="quick-heading">
+          <h2 id="lineup-title" className="display">THE LINEUP</h2>
+          <span>Pick a player to jump in</span>
+        </div>
+        <div className="quick-grid">
+          {characters.map((character) => (
+            <button
+              className="quick-player"
+              key={character.id}
+              style={playerColor(character)}
+              onClick={() => onPick(character)}
+            >
+              <span className="quick-portrait">
+                <Image src={character.sprite} alt="" fill sizes="52px" unoptimized />
+              </span>
+              <span className="quick-name">{character.name}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </main>
   );
 }
 
-function CharacterSelect({
-  onPick,
-  onBack,
-}: {
-  onPick: (c: Character) => void;
+function PlayerHeader({ title, onBack, children }: {
+  title: string;
   onBack: () => void;
+  children?: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 flex flex-col items-center p-4 md:p-8 gap-4 overflow-auto">
-      <div className="w-full flex items-center justify-between">
-        <button
-          onClick={onBack}
-          className="btn-arcade bg-yellow-400 text-black rounded-xl px-5 py-3 text-base font-black"
-        >
-          ← BACK
-        </button>
-        <h2 className="arcade-text arcade-stroke text-3xl md:text-5xl font-black text-white">
-          PICK YOUR BALLER
-        </h2>
-        <div className="w-20" />
-      </div>
+    <header className="selection-header">
+      <button className="back-button" onClick={onBack}><span aria-hidden="true">←</span> Back</button>
+      <h1 className="display selection-title">{title}</h1>
+      {children}
+    </header>
+  );
+}
 
-      <div className="flex-1 w-full flex flex-col md:flex-row items-center justify-center gap-4 md:gap-6 flex-wrap">
-        {characters.map((c) => (
-          <CharacterCard key={c.id} character={c} onPick={onPick} />
+function playerColor(character: Character) {
+  return { "--player-color": character.accent } as CSSProperties;
+}
+
+function CharacterSelect({ onPick, onBack }: { onPick: (c: Character) => void; onBack: () => void }) {
+  const [scores] = useState(() => Object.fromEntries(characters.map(({ id }) => [id, getHighScore(id)])));
+
+  return (
+    <main className="selection screen-in">
+      <PlayerHeader title="PICK YOUR BALLER" onBack={onBack} />
+      <div className="player-grid">
+        {characters.map((character) => (
+          <button
+            key={character.id}
+            className="player-card"
+            style={playerColor(character)}
+            onClick={() => onPick(character)}
+          >
+            <span className="player-art">
+              <span className="player-halo" aria-hidden="true" />
+              <Image src={character.sprite} alt="" fill sizes="(max-width: 620px) 43vw, 300px" unoptimized />
+            </span>
+            <span className="player-info">
+              <span className="player-tag">{character.tagline}</span>
+              <span className="display player-name">{character.name}</span>
+              <span className="player-best">Best <strong>{scores[character.id] ?? 0}</strong></span>
+              <span aria-hidden="true" className="player-arrow">↗</span>
+            </span>
+          </button>
         ))}
       </div>
-    </div>
+    </main>
   );
 }
 
-function CharacterCard({
-  character: c,
-  onPick,
-}: {
-  character: Character;
-  onPick: (c: Character) => void;
-}) {
-  const hi = typeof window !== "undefined" ? getHighScore(c.id) : 0;
-  return (
-    <button
-      onClick={() => onPick(c)}
-      className="btn-arcade rounded-3xl p-4 md:p-6 flex flex-col items-center gap-2 min-w-[220px] max-w-[280px] w-full md:w-auto"
-      style={{
-        background: `linear-gradient(160deg, ${c.accent}, #0a0a2a)`,
-      }}
-    >
-      <div className="w-40 h-40 md:w-52 md:h-52 rounded-2xl bg-black/30 flex items-center justify-center overflow-hidden">
-        <img src={c.sprite} alt={c.name} className="w-full h-full object-contain" />
-      </div>
-      <div
-        className="arcade-text arcade-stroke text-xl md:text-2xl font-black text-white text-center"
-      >
-        {c.name}
-      </div>
-      <div className="text-yellow-300 font-black text-sm md:text-base arcade-stroke">
-        {c.tagline}
-      </div>
-      {hi > 0 && (
-        <div className="text-white/90 text-xs font-bold">HIGH: {hi}</div>
-      )}
-    </button>
-  );
-}
+const shots = [
+  { id: "free-throw", label: "Free throw", points: 1, description: "Step up to the line." },
+  { id: "three-pointer", label: "Three-pointer", points: 3, description: "Take it from downtown." },
+] as const;
 
-function ShotSelect({
-  character,
-  onPick,
-  onBack,
-}: {
+function ShotSelect({ character, onPick, onBack }: {
   character: Character;
-  onPick: (s: ShotKind) => void;
+  onPick: (shot: ShotKind) => void;
   onBack: () => void;
 }) {
   return (
-    <div className="fixed inset-0 flex flex-col items-center p-4 md:p-8 gap-6 overflow-auto">
-      <div className="w-full flex items-center justify-between">
-        <button
-          onClick={onBack}
-          className="btn-arcade bg-yellow-400 text-black rounded-xl px-5 py-3 text-base font-black"
-        >
-          ← BACK
-        </button>
-        <h2 className="arcade-text arcade-stroke text-3xl md:text-5xl font-black text-white">
-          PICK YOUR SHOT
-        </h2>
-        <div className="w-20" />
+    <main className="selection shot-screen screen-in">
+      <PlayerHeader title="PICK YOUR SHOT" onBack={onBack}>
+        <span className="selected-player" style={playerColor(character)}>
+          <span className="quick-portrait">
+            <Image src={character.sprite} alt="" fill sizes="56px" unoptimized />
+          </span>
+          {character.name}
+        </span>
+      </PlayerHeader>
+      <div className="shot-grid">
+        {shots.map(({ id, label, points, description }) => (
+          <button className="shot-card" key={id} data-shot={id} onClick={() => onPick(id)}>
+            <span className="shot-graphic" aria-hidden="true">
+              <span className="court-diagram"><i /></span>
+              <span className="shot-number display">{points}</span>
+            </span>
+            <span className="shot-info">
+              <span className="player-tag">+{points} {points === 1 ? "point" : "points"}</span>
+              <span className="display shot-name">{label}</span>
+              <span className="shot-description">{description}</span>
+              <span aria-hidden="true" className="player-arrow">↗</span>
+            </span>
+          </button>
+        ))}
       </div>
-
-      <div className="flex items-center gap-3">
-        <img
-          src={character.sprite}
-          alt={character.name}
-          className="w-24 h-24 md:w-32 md:h-32 object-contain"
-        />
-        <div>
-          <div className="arcade-stroke text-white text-xl md:text-3xl font-black">
-            {character.name}
-          </div>
-          <div className="text-yellow-300 font-black text-sm md:text-lg">
-            {character.tagline}
-          </div>
-        </div>
-      </div>
-
-      <div className="flex-1 w-full flex flex-col md:flex-row gap-6 items-center justify-center">
-        <button
-          data-shot="free-throw"
-          onClick={() => onPick("free-throw")}
-          className="btn-arcade bg-gradient-to-br from-blue-400 to-blue-700 text-white rounded-3xl p-8 md:p-12 min-w-[260px] min-h-[200px] flex flex-col items-center justify-center gap-3"
-        >
-          <div className="text-5xl md:text-7xl">🏀</div>
-          <div className="arcade-text arcade-stroke text-3xl md:text-5xl font-black">
-            FREE THROW
-          </div>
-          <div className="text-yellow-300 font-black arcade-stroke text-xl md:text-2xl">
-            +1 POINT
-          </div>
-        </button>
-        <button
-          data-shot="three-pointer"
-          onClick={() => onPick("three-pointer")}
-          className="btn-arcade bg-gradient-to-br from-purple-500 to-red-600 text-white rounded-3xl p-8 md:p-12 min-w-[260px] min-h-[200px] flex flex-col items-center justify-center gap-3"
-        >
-          <div className="text-5xl md:text-7xl">🎯</div>
-          <div className="arcade-text arcade-stroke text-3xl md:text-5xl font-black">
-            THREE POINTER
-          </div>
-          <div className="text-yellow-300 font-black arcade-stroke text-xl md:text-2xl">
-            +3 POINTS
-          </div>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function BasketballBackground() {
-  // decorative floating balls
-  const balls = Array.from({ length: 8 }, (_, i) => i);
-  return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {balls.map((i) => (
-        <img
-          key={i}
-          src="/basketball.png"
-          alt=""
-          className="absolute anim-spin opacity-20"
-          style={{
-            top: `${(i * 13 + 5) % 90}%`,
-            left: `${(i * 27 + 10) % 90}%`,
-            width: `${40 + (i % 3) * 20}px`,
-            height: `${40 + (i % 3) * 20}px`,
-            animationDuration: `${2 + (i % 4)}s`,
-          }}
-        />
-      ))}
-    </div>
+      <p className="shot-instructions">Hold to charge. Release in the green zone.</p>
+    </main>
   );
 }
